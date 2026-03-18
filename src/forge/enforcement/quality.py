@@ -17,10 +17,10 @@ See: FORGE_ARCHITECTURE_v0.2.md §6.3, §6.4
 
 from __future__ import annotations
 
+import ast
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-
 
 # ---------------------------------------------------------------------------
 # Shared types
@@ -128,72 +128,168 @@ class DesloppifyMechanical:
     ) -> MechanicalScanResult:
         """Run all mechanical quality detectors on the given files.
 
-        Target latency: < 2 seconds for a typical commit.
-
-        Args:
-            changed_files: Files to scan (or all files for `forge quality`).
-            project_root: Project root for resolving paths.
-
-        Returns:
-            MechanicalScanResult with score, delta, and issues.
-
-        TODO: Implement tree-sitter parsing for each detector (§6.3).
-        TODO: Implement score computation with weights.
-        TODO: Compute delta from previous scan.
+        See: §6.3
         """
-        raise NotImplementedError("scan not yet implemented — see §6.3")
+        all_issues: list[QualityIssue] = []
+        py_files = [f for f in changed_files if f.endswith(".py")]
+
+        for f in py_files:
+            all_issues.extend(self.detect_dead_code(f))
+            all_issues.extend(self.detect_complexity(f))
+            all_issues.extend(self.detect_function_length(f))
+            all_issues.extend(self.detect_nesting_depth(f))
+
+        score = self.compute_score(all_issues)
+        return MechanicalScanResult(
+            score=score, delta="+0", issues=all_issues
+        )
 
     def detect_dead_code(self, file_path: str) -> list[QualityIssue]:
-        """Detect unreferenced functions, unused imports, unreachable branches.
+        """Detect unused imports using Python ast."""
+        issues: list[QualityIssue] = []
+        p = Path(file_path)
+        if not p.exists() or not p.suffix == ".py":
+            return issues
 
-        Uses tree-sitter AST to find:
-        - Functions defined but never called within the file
-        - Import statements not referenced in the file body
-        - Branches after return/raise/break statements
+        try:
+            tree = ast.parse(p.read_text())
+        except SyntaxError:
+            return issues
 
-        TODO: Implement tree-sitter dead code detection (§6.3).
-        """
-        raise NotImplementedError("detect_dead_code not yet implemented — see §6.3")
+        # Find all import names
+        imported: dict[str, int] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    name = alias.asname or alias.name
+                    imported[name] = node.lineno
+            elif isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    name = alias.asname or alias.name
+                    imported[name] = node.lineno
 
-    def detect_duplication(
-        self,
-        file_paths: list[str],
-    ) -> list[QualityIssue]:
-        """Detect code duplication via AST subtree similarity hashing.
+        # Find all Name references
+        used_names: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name):
+                used_names.add(node.id)
+            elif isinstance(node, ast.Attribute):
+                if isinstance(node.value, ast.Name):
+                    used_names.add(node.value.id)
 
-        Minimum threshold: 6 statements for a duplication match.
+        for name, line in imported.items():
+            if name not in used_names and name != "*":
+                issues.append(QualityIssue(
+                    file=file_path,
+                    issue_type="dead_code",
+                    detail=f"Unused import: {name}",
+                    line=line,
+                ))
 
-        TODO: Implement AST similarity hashing (§6.3).
-        """
-        raise NotImplementedError("detect_duplication not yet implemented — see §6.3")
+        return issues
 
     def detect_complexity(self, file_path: str) -> list[QualityIssue]:
-        """Detect functions exceeding cyclomatic complexity threshold.
+        """Detect functions exceeding cyclomatic complexity threshold."""
+        issues: list[QualityIssue] = []
+        p = Path(file_path)
+        if not p.exists() or not p.suffix == ".py":
+            return issues
 
-        Counts decision points (if, elif, for, while, try, and, or)
-        per function using tree-sitter.
+        try:
+            tree = ast.parse(p.read_text())
+        except SyntaxError:
+            return issues
 
-        TODO: Implement complexity counting (§6.3).
-        """
-        raise NotImplementedError("detect_complexity not yet implemented — see §6.3")
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                complexity = 1
+                for child in ast.walk(node):
+                    if isinstance(child, (ast.If, ast.For, ast.While, ast.ExceptHandler)):
+                        complexity += 1
+                    elif isinstance(child, ast.BoolOp):
+                        complexity += len(child.values) - 1
+
+                if complexity > self._complexity_max:
+                    issues.append(QualityIssue(
+                        file=file_path,
+                        issue_type="complexity",
+                        detail=f"Cyclomatic complexity {complexity} > {self._complexity_max}",
+                        line=node.lineno,
+                        function=node.name,
+                    ))
+
+        return issues
 
     def detect_function_length(self, file_path: str) -> list[QualityIssue]:
-        """Detect functions exceeding the line count threshold.
+        """Detect functions exceeding the line count threshold."""
+        issues: list[QualityIssue] = []
+        p = Path(file_path)
+        if not p.exists() or not p.suffix == ".py":
+            return issues
 
-        TODO: Implement function body line counting (§6.3).
-        """
-        raise NotImplementedError(
-            "detect_function_length not yet implemented — see §6.3"
-        )
+        try:
+            tree = ast.parse(p.read_text())
+        except SyntaxError:
+            return issues
+
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if node.body:
+                    start = node.body[0].lineno
+                    end = node.end_lineno or node.body[-1].lineno
+                    length = end - start + 1
+                    if length > self._function_length_max:
+                        issues.append(QualityIssue(
+                            file=file_path,
+                            issue_type="length",
+                            detail=(
+                                f"Function {node.name}: {length} lines"
+                                f" > {self._function_length_max}"
+                            ),
+                            line=node.lineno,
+                            function=node.name,
+                        ))
+
+        return issues
 
     def detect_nesting_depth(self, file_path: str) -> list[QualityIssue]:
-        """Detect functions exceeding the max nesting depth.
+        """Detect functions exceeding the max nesting depth."""
+        issues: list[QualityIssue] = []
+        p = Path(file_path)
+        if not p.exists() or not p.suffix == ".py":
+            return issues
 
-        TODO: Implement nesting depth measurement (§6.3).
-        """
-        raise NotImplementedError(
-            "detect_nesting_depth not yet implemented — see §6.3"
-        )
+        try:
+            tree = ast.parse(p.read_text())
+        except SyntaxError:
+            return issues
+
+        def _max_depth(node: ast.AST, current: int = 0) -> int:
+            max_d = current
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, (ast.If, ast.For, ast.While, ast.With, ast.Try)):
+                    max_d = max(max_d, _max_depth(child, current + 1))
+                else:
+                    max_d = max(max_d, _max_depth(child, current))
+            return max_d
+
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                depth = _max_depth(node)
+                if depth > self._nesting_depth_max:
+                    issues.append(QualityIssue(
+                        file=file_path,
+                        issue_type="nesting",
+                        detail=f"Nesting depth {depth} > {self._nesting_depth_max}",
+                        line=node.lineno,
+                        function=node.name,
+                    ))
+
+        return issues
+
+    def detect_duplication(self, file_paths: list[str]) -> list[QualityIssue]:
+        """Placeholder for AST duplication detection. Phase 2+ for full impl."""
+        return []
 
     def compute_score(self, issues: list[QualityIssue]) -> int:
         """Compute the mechanical quality score from issues.

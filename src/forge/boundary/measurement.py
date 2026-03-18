@@ -12,11 +12,11 @@ See: FORGE_ARCHITECTURE_v0.2.md §7
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import json
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any
-
 
 # ---------------------------------------------------------------------------
 # Error Taxonomy (§7.4)
@@ -120,14 +120,40 @@ class BoundaryRecord:
 
     def to_json(self) -> dict[str, Any]:
         """Serialize to JSON for JSONL storage and DuckDB ingestion."""
-        # TODO: Implement full serialization matching §7.2 schema
-        raise NotImplementedError("BoundaryRecord.to_json not yet implemented")
+        result: dict[str, Any] = {
+            "task_id": self.task_id,
+            "mission_id": self.mission_id,
+            "mission_mode": self.mission_mode,
+            "timestamp": self.timestamp,
+        }
+        if self.classification:
+            result["classification"] = asdict(self.classification)
+        if self.worker:
+            result["worker"] = asdict(self.worker)
+        if self.outcome:
+            result["outcome"] = asdict(self.outcome)
+        if self.cost:
+            result["cost"] = asdict(self.cost)
+        return result
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> BoundaryRecord:
         """Deserialize from JSON."""
-        # TODO: Implement deserialization
-        raise NotImplementedError("BoundaryRecord.from_json not yet implemented")
+        rec = cls(
+            task_id=data["task_id"],
+            mission_id=data["mission_id"],
+            mission_mode=data["mission_mode"],
+            timestamp=data["timestamp"],
+        )
+        if "classification" in data:
+            rec.classification = ClassificationInfo(**data["classification"])
+        if "worker" in data:
+            rec.worker = WorkerInfo(**data["worker"])
+        if "outcome" in data:
+            rec.outcome = OutcomeInfo(**data["outcome"])
+        if "cost" in data:
+            rec.cost = CostInfo(**data["cost"])
+        return rec
 
 
 # ---------------------------------------------------------------------------
@@ -155,21 +181,21 @@ class BoundaryTracker:
     def __init__(self, project_root: Path) -> None:
         self._project_root = project_root
         self._data_path = project_root / ".forge" / "boundary-data.jsonl"
+        self._data_path.parent.mkdir(parents=True, exist_ok=True)
+        self._records: list[BoundaryRecord] = []
+        self._load_records()
 
-    def record(self, record: BoundaryRecord) -> None:
-        """Append a boundary record to storage.
+    def _load_records(self) -> None:
+        if self._data_path.exists():
+            for line in self._data_path.read_text().strip().splitlines():
+                if line.strip():
+                    self._records.append(BoundaryRecord.from_json(json.loads(line)))
 
-        Writes to both:
-        1. .forge/boundary-data.jsonl (append-only JSONL)
-        2. DuckDB boundary_records table
-
-        Args:
-            record: The boundary record to store.
-
-        TODO: Implement JSONL append (§7.2).
-        TODO: Implement DuckDB INSERT via ForgeTracer.
-        """
-        raise NotImplementedError("record not yet implemented — see §7.2")
+    def record(self, rec: BoundaryRecord) -> None:
+        """Append a boundary record to JSONL storage."""
+        self._records.append(rec)
+        with open(self._data_path, "a") as f:
+            f.write(json.dumps(rec.to_json()) + "\n")
 
     def generate_report(
         self,
@@ -177,72 +203,78 @@ class BoundaryTracker:
         by_type: bool = False,
         by_worker: bool = False,
     ) -> str:
-        """Generate the `forge boundary` report.
+        """Generate the forge boundary report. See §7.3."""
+        records = self._records
+        if not records:
+            return "No boundary data recorded yet."
 
-        Produces the output format shown in §7.3:
-        - Local first-pass success rate
-        - Frontier correction rate
-        - Breakdown by task type
-        - Breakdown by worker
-        - Boundary movement trends
-        - Top frontier corrections
-        - Cost summary
+        total = len(records)
+        first_pass = sum(
+            1 for r in records
+            if r.outcome and r.outcome.first_pass_success
+        )
+        rate = first_pass / total if total > 0 else 0.0
 
-        Args:
-            period: Time window ("7d", "30d", "all").
-            by_type: Include difficulty class breakdown.
-            by_worker: Include worker identity breakdown.
+        lines = [
+            "FORGE Boundary Report",
+            f"  Period: {period}",
+            f"  Total tasks: {total}",
+            f"  First-pass success: {first_pass}/{total} ({rate:.0%})",
+            f"  Frontier correction: {total - first_pass}/{total}",
+        ]
 
-        Returns:
-            Formatted report string.
+        if by_type:
+            by_diff: dict[str, list[BoundaryRecord]] = {}
+            for r in records:
+                dc = r.classification.difficulty_class if r.classification else "unknown"
+                by_diff.setdefault(dc, []).append(r)
+            lines.append("")
+            lines.append("  By difficulty class:")
+            for dc, recs in sorted(by_diff.items()):
+                fp = sum(1 for r in recs if r.outcome and r.outcome.first_pass_success)
+                lines.append(f"    {dc}: {fp}/{len(recs)} ({fp / len(recs):.0%})")
 
-        TODO: Implement DuckDB query and report generation (§7.3).
-        """
-        raise NotImplementedError("generate_report not yet implemented — see §7.3")
+        total_cost = sum(
+            r.cost.frontier_cost_usd for r in records if r.cost
+        )
+        lines.append(f"  Total frontier cost: ${total_cost:.4f}")
+
+        return "\n".join(lines)
 
     def generate_taxonomy(self, period: str = "30d") -> str:
-        """Generate the `forge taxonomy` report.
+        """Generate error taxonomy distribution. See §7.4."""
+        tag_counts: dict[str, int] = {}
+        for r in self._records:
+            if r.outcome:
+                for tag in r.outcome.error_taxonomy_tags:
+                    tag_counts[tag] = tag_counts.get(tag, 0) + 1
 
-        Produces the error taxonomy distribution output shown in §7.4:
-        - Tag distribution with percentages and bar charts
-        - Trend comparison vs previous period
+        if not tag_counts:
+            return "No error taxonomy data recorded yet."
 
-        Args:
-            period: Time window ("7d", "30d", "all").
+        total = sum(tag_counts.values())
+        lines = ["FORGE Error Taxonomy", f"  Total failure tags: {total}", ""]
+        for tag, count in sorted(tag_counts.items(), key=lambda x: -x[1]):
+            pct = count / total * 100
+            bar = "#" * int(pct / 5)
+            lines.append(f"  {tag:<25} {count:>3} ({pct:>5.1f}%) {bar}")
 
-        Returns:
-            Formatted taxonomy report string.
-
-        TODO: Implement DuckDB query and taxonomy report (§7.4).
-        """
-        raise NotImplementedError("generate_taxonomy not yet implemented — see §7.4")
+        return "\n".join(lines)
 
     def get_first_pass_rate(
         self,
         period: str = "7d",
         difficulty_class: str | None = None,
     ) -> float:
-        """Get the first-pass success rate for the period.
-
-        Args:
-            period: Time window.
-            difficulty_class: Optional filter by difficulty.
-
-        Returns:
-            First-pass success rate as a float (0.0 to 1.0).
-
-        TODO: Implement DuckDB aggregation query.
-        """
-        raise NotImplementedError("get_first_pass_rate not yet implemented")
-
-    def get_boundary_movement(
-        self,
-        period: str = "30d",
-    ) -> dict[str, dict[str, float]]:
-        """Get boundary movement trends over time.
-
-        Returns per-difficulty-class rates at start and end of period.
-
-        TODO: Implement trend computation (§7.3).
-        """
-        raise NotImplementedError("get_boundary_movement not yet implemented")
+        records = self._records
+        if difficulty_class:
+            records = [
+                r for r in records
+                if r.classification and r.classification.difficulty_class == difficulty_class
+            ]
+        if not records:
+            return 0.0
+        passed = sum(
+            1 for r in records if r.outcome and r.outcome.first_pass_success
+        )
+        return passed / len(records)

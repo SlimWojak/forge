@@ -18,9 +18,13 @@ See: FORGE_ARCHITECTURE_v0.2.md §10
 
 from __future__ import annotations
 
+import json
+import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import duckdb
 
 # DuckDB schema SQL matching §10.2
 SCHEMA_SQL = """
@@ -174,25 +178,34 @@ class ForgeTracer:
     """
 
     def __init__(self, db_path: Path | None = None) -> None:
-        """Initialize the tracer.
-
-        Args:
-            db_path: Path to DuckDB database file.
-                    Default: .forge/traces/forge.duckdb
-        """
         self._db_path = db_path or Path(".forge/traces/forge.duckdb")
-        self._connection: Any = None  # duckdb.DuckDBPyConnection
+        self._connection: duckdb.DuckDBPyConnection | None = None
+
+    def _conn(self) -> duckdb.DuckDBPyConnection:
+        if self._connection is None:
+            self._db_path.parent.mkdir(parents=True, exist_ok=True)
+            self._connection = duckdb.connect(str(self._db_path))
+        return self._connection
 
     def initialize_schema(self) -> None:
-        """Create DuckDB tables if they don't exist.
+        """Create DuckDB tables matching §10.2. Safe to call repeatedly."""
+        conn = self._conn()
+        # Strip comments, then split on semicolons
+        lines = [
+            line for line in SCHEMA_SQL.splitlines()
+            if not line.strip().startswith("--")
+        ]
+        clean_sql = "\n".join(lines)
+        for statement in clean_sql.split(";"):
+            stmt = statement.strip()
+            if stmt:
+                conn.execute(stmt)
 
-        Executes the schema SQL from §10.2. Safe to call multiple
-        times — uses CREATE TABLE IF NOT EXISTS.
+    def _now(self) -> str:
+        return datetime.now(UTC).isoformat()
 
-        TODO: Implement DuckDB connection and schema creation (§10.2).
-        TODO: Ensure .forge/traces/ directory exists.
-        """
-        raise NotImplementedError("initialize_schema not yet implemented — see §10.2")
+    def _uid(self) -> str:
+        return uuid.uuid4().hex[:12]
 
     def record_span(
         self,
@@ -207,23 +220,14 @@ class ForgeTracer:
         status: str = "ok",
         attributes: dict[str, Any] | None = None,
     ) -> None:
-        """Record a trace span.
-
-        Args:
-            span_id: Unique span identifier.
-            trace_id: Parent trace identifier.
-            span_name: Name of the operation.
-            service: Service that emitted the span (worker, orchestrator, etc.).
-            parent_span_id: Parent span for nested operations.
-            start_time: ISO timestamp of span start.
-            end_time: ISO timestamp of span end.
-            duration_ms: Duration in milliseconds.
-            status: "ok" or "error".
-            attributes: Flexible key-value pairs.
-
-        TODO: Implement DuckDB INSERT into spans table (§10.2).
-        """
-        raise NotImplementedError("record_span not yet implemented — see §10.2")
+        self._conn().execute(
+            "INSERT INTO spans VALUES (?,?,?,?,?,?,?,?,?,?)",
+            [
+                span_id, trace_id, parent_span_id, span_name, service,
+                start_time or self._now(), end_time, duration_ms, status,
+                json.dumps(attributes or {}),
+            ],
+        )
 
     def record_model_call(
         self,
@@ -238,11 +242,14 @@ class ForgeTracer:
         temperature: float | None = None,
         lora_version: str | None = None,
     ) -> None:
-        """Record an LLM model call.
-
-        TODO: Implement DuckDB INSERT into model_calls table (§10.2).
-        """
-        raise NotImplementedError("record_model_call not yet implemented — see §10.2")
+        self._conn().execute(
+            "INSERT INTO model_calls VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            [
+                self._uid(), span_id, model, provider, role,
+                tokens_in, tokens_out, latency_ms,
+                cost_usd, temperature, lora_version,
+            ],
+        )
 
     def record_tool_call(
         self,
@@ -254,11 +261,14 @@ class ForgeTracer:
         duration_ms: int | None = None,
         hook_triggered: str | None = None,
     ) -> None:
-        """Record an ACI tool call.
-
-        TODO: Implement DuckDB INSERT into tool_calls table (§10.2).
-        """
-        raise NotImplementedError("record_tool_call not yet implemented — see §10.2")
+        self._conn().execute(
+            "INSERT INTO tool_calls VALUES (?,?,?,?,?,?,?,?)",
+            [
+                self._uid(), span_id, tool_name,
+                json.dumps(arguments or {}), result_status,
+                result_summary, duration_ms, hook_triggered,
+            ],
+        )
 
     def record_boundary(
         self,
@@ -277,14 +287,18 @@ class ForgeTracer:
         error_taxonomy_tags: list[str] | None = None,
         frontier_cost_usd: float | None = None,
     ) -> None:
-        """Record a boundary measurement data point.
-
-        Also appends to .forge/boundary-data.jsonl (append-only).
-
-        TODO: Implement DuckDB INSERT into boundary_records (§7.2, §10.2).
-        TODO: Append JSONL record to boundary-data.jsonl.
-        """
-        raise NotImplementedError("record_boundary not yet implemented — see §7.2")
+        now = self._now()
+        self._conn().execute(
+            "INSERT OR REPLACE INTO boundary_records VALUES "
+            "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [
+                task_id, mission_id, mission_mode, difficulty_class,
+                worker_model, lora_version, first_pass_success,
+                total_iterations, json.dumps(error_taxonomy_tags or []),
+                local_tokens, frontier_tokens_in, frontier_tokens_out,
+                frontier_cost_usd, wall_clock_seconds, now,
+            ],
+        )
 
     def record_error_taxonomy(
         self,
@@ -294,12 +308,9 @@ class ForgeTracer:
         reviewer_model: str,
         detail: str | None = None,
     ) -> None:
-        """Record an error taxonomy tag from a verdict.
-
-        TODO: Implement DuckDB INSERT into error_taxonomy (§7.4, §10.2).
-        """
-        raise NotImplementedError(
-            "record_error_taxonomy not yet implemented — see §7.4"
+        self._conn().execute(
+            "INSERT INTO error_taxonomy VALUES (?,?,?,?,?,?)",
+            [verdict_id, task_id, tag, detail, reviewer_model, self._now()],
         )
 
     def record_shadow_event(
@@ -311,15 +322,12 @@ class ForgeTracer:
         human_feedback: str | None = None,
         decision_time_s: int | None = None,
     ) -> None:
-        """Record a shadow mode decision.
-
-        Also appends to .forge/shadow-log.jsonl (append-only).
-
-        TODO: Implement DuckDB INSERT into shadow_log (§5.5, §10.2).
-        TODO: Append JSONL record to shadow-log.jsonl.
-        """
-        raise NotImplementedError(
-            "record_shadow_event not yet implemented — see §5.5"
+        self._conn().execute(
+            "INSERT INTO shadow_log VALUES (?,?,?,?,?,?,?)",
+            [
+                task_id, oracle_id, gate_verdict, human_decision,
+                human_feedback, decision_time_s, self._now(),
+            ],
         )
 
     def record_skill_event(
@@ -330,37 +338,26 @@ class ForgeTracer:
         to_tier: int | None = None,
         task_id: str | None = None,
     ) -> None:
-        """Record a skill lifecycle event.
-
-        TODO: Implement DuckDB INSERT into skill_events (§9, §10.2).
-        """
-        raise NotImplementedError(
-            "record_skill_event not yet implemented — see §9"
+        self._conn().execute(
+            "INSERT INTO skill_events VALUES (?,?,?,?,?,?)",
+            [skill_id, event_type, from_tier, to_tier, task_id, self._now()],
         )
 
     def query(self, sql: str, max_rows: int = 100) -> dict[str, Any]:
-        """Execute a SQL query against the trace database.
-
-        Used by the query_traces ACI tool for agent self-observability.
-        Only SELECT queries are allowed.
-
-        Args:
-            sql: SQL SELECT query.
-            max_rows: Maximum rows to return.
-
-        Returns:
-            Dict with "columns" and "rows" keys.
-
-        TODO: Implement DuckDB query execution (§10.3).
-        """
+        """Execute a SELECT query. Returns {columns, rows, truncated}."""
         if not sql.strip().upper().startswith("SELECT"):
             raise ValueError("Only SELECT queries are allowed")
-        raise NotImplementedError("query not yet implemented — see §10.3")
+        result = self._conn().execute(sql)
+        columns = [desc[0] for desc in result.description]
+        rows = result.fetchmany(max_rows + 1)
+        truncated = len(rows) > max_rows
+        return {
+            "columns": columns,
+            "rows": [list(r) for r in rows[:max_rows]],
+            "truncated": truncated,
+        }
 
     def close(self) -> None:
-        """Close the DuckDB connection.
-
-        TODO: Implement connection cleanup.
-        """
         if self._connection is not None:
-            pass  # TODO: self._connection.close()
+            self._connection.close()
+            self._connection = None

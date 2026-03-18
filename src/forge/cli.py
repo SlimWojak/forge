@@ -144,9 +144,10 @@ def task(description: str, difficulty: str | None) -> None:
             try:
                 orc = self._gen.build_oracle(
                     task_id=task_id,
-                    task_description=description,
-                    worker_model="Qwen/Qwen3.5-35B-A3B-GPTQ-Int4",
-                    worker_assessment=worker_message,
+                    worktree_path=project_root,
+                    main_branch="HEAD~1",
+                    worker_final_message=worker_message,
+                    iteration=iteration,
                 )
                 console.print("  [yellow]Oracle ready[/]")
                 return orc

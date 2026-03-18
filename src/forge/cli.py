@@ -125,18 +125,35 @@ def mission(description: str, mode: str) -> None:
 def status() -> None:
     """Show current state: active tasks, quality, loop metrics, phase.
 
-    Reads .forge/state.json and displays a human-readable summary
-    of the current mission, task states, quality scores, and
-    iteration counts.
-
     See: FORGE_ARCHITECTURE_v0.2.md §2.1, §3.2
     """
-    # TODO: Read .forge/state.json
-    # TODO: Display mission/task state table
-    # TODO: Show quality scores and iteration counts
-    # TODO: Show pending shadow-mode merges
-    console.print("[bold green]FORGE[/] Status")
-    console.print("Not yet implemented — see §3.2 for state schema.")
+    import json
+    from pathlib import Path
+
+    state_path = Path(".forge/state.json")
+    feature_path = Path("feature_list.json")
+
+    console.print("[bold green]FORGE[/] Status\n")
+
+    if state_path.exists():
+        state = json.loads(state_path.read_text())
+        shadow = state.get("shadow_mode", {})
+        console.print(f"  Shadow mode: {'enabled' if shadow.get('enabled') else 'disabled'}")
+        console.print(f"  Proposed: {shadow.get('total_proposed', 0)}")
+        console.print(f"  Approved: {shadow.get('total_approved', 0)}")
+    else:
+        console.print("  No .forge/state.json found.")
+
+    if feature_path.exists():
+        features = json.loads(feature_path.read_text())
+        for phase_key in ("phase_1",):
+            phase = features.get(phase_key, {})
+            for ms_key, ms in phase.items():
+                if isinstance(ms, dict) and "features" in ms:
+                    total = len(ms["features"])
+                    done = sum(1 for f in ms["features"] if f.get("passes"))
+                    console.print(f"  {ms.get('name', ms_key)}: {done}/{total}")
+    console.print()
 
 
 # ---------------------------------------------------------------------------
@@ -159,15 +176,20 @@ def quality(mechanical_only: bool) -> None:
 
     See: FORGE_ARCHITECTURE_v0.2.md §6.3, §6.4
     """
-    # TODO: Run DesloppifyMechanical on changed files (§6.3)
-    # TODO: If not mechanical_only, run DesloppifySubjective (§6.4)
-    # TODO: Display score, delta, and issue list
-    console.print("[bold green]FORGE[/] Quality scan")
-    if mechanical_only:
-        console.print("  Mode: mechanical only (tree-sitter)")
+    import glob
+
+    from forge.enforcement.quality import DesloppifyMechanical
+
+    scanner = DesloppifyMechanical()
+    py_files = glob.glob("src/**/*.py", recursive=True)
+    result = scanner.scan(py_files)
+
+    console.print(f"[bold green]FORGE[/] Quality: {result.score}/100 ({result.delta})\n")
+    if result.issues:
+        for issue in result.issues:
+            console.print(f"  [{issue.issue_type}] {issue.file}:{issue.line} — {issue.detail}")
     else:
-        console.print("  Mode: mechanical + subjective (LLM)")
-    console.print("Not yet implemented — see §6.3-§6.4 for Desloppify spec.")
+        console.print("  No issues found.")
 
 
 @main.command()
@@ -235,28 +257,66 @@ def boundary(period: str, by_type: bool, by_worker: bool) -> None:
 
     See: FORGE_ARCHITECTURE_v0.2.md §7.3
     """
-    # TODO: Query boundary_records from DuckDB (§7.2)
-    # TODO: Compute first-pass success rates by difficulty class
-    # TODO: Show boundary movement trends
-    # TODO: Show cost summary
-    console.print(f"[bold green]FORGE[/] Boundary Report — period: {period}")
-    console.print("Not yet implemented — see §7.3 for output format.")
+    from pathlib import Path
+
+    from forge.boundary.measurement import BoundaryTracker
+
+    tracker = BoundaryTracker(project_root=Path("."))
+    report = tracker.generate_report(period=period, by_type=by_type, by_worker=by_worker)
+    console.print(f"[bold green]FORGE[/] {report}")
 
 
 @main.command()
 def metrics() -> None:
     """Show frontier/local split, iteration counts, and cost data.
 
-    Queries the DuckDB observability database for aggregated metrics
-    across all completed tasks.
-
     See: FORGE_ARCHITECTURE_v0.2.md §10
     """
-    # TODO: Query DuckDB for aggregated metrics
-    # TODO: Display frontier/local token split
-    # TODO: Display cost breakdown by provider
-    console.print("[bold green]FORGE[/] Metrics")
-    console.print("Not yet implemented — see §10 for observability spec.")
+    from pathlib import Path
+
+    from forge.observability.tracer import ForgeTracer
+
+    db_path = Path(".forge/traces/forge.duckdb")
+    if not db_path.exists():
+        console.print("[bold green]FORGE[/] Metrics")
+        console.print("  No trace data yet. Run forge task first.")
+        return
+
+    tracer = ForgeTracer(db_path=db_path)
+    console.print("[bold green]FORGE[/] Metrics\n")
+
+    try:
+        result = tracer.query(
+            "SELECT COUNT(*) as tasks, "
+            "SUM(CASE WHEN first_pass_success THEN 1 ELSE 0 END) as passed, "
+            "SUM(local_tokens) as local_tok, "
+            "SUM(frontier_tokens_in + frontier_tokens_out) as frontier_tok "
+            "FROM boundary_records"
+        )
+        if result["rows"]:
+            row = result["rows"][0]
+            tasks, passed, local_tok, frontier_tok = row
+            rate = passed / tasks if tasks else 0
+            console.print(f"  Total tasks: {tasks}")
+            console.print(f"  First-pass rate: {rate:.0%}")
+            console.print(f"  Local tokens: {local_tok:,}")
+            console.print(f"  Frontier tokens: {frontier_tok:,}")
+    except Exception:
+        console.print("  No boundary data available.")
+
+    try:
+        result = tracer.query(
+            "SELECT tag, COUNT(*) as cnt FROM error_taxonomy "
+            "GROUP BY tag ORDER BY cnt DESC LIMIT 5"
+        )
+        if result["rows"]:
+            console.print("\n  Top error tags:")
+            for row in result["rows"]:
+                console.print(f"    {row[0]}: {row[1]}")
+    except Exception:
+        pass
+
+    tracer.close()
 
 
 # ---------------------------------------------------------------------------
@@ -425,15 +485,13 @@ def benchmark_run(cartridge: str | None, tag: str | None) -> None:
 
     See: FORGE_ARCHITECTURE_v0.2.md §8
     """
-    # TODO: Load cartridge-manifest.yaml
-    # TODO: Execute cartridges in isolated worktrees
-    # TODO: Collect results and write to benchmark-results/
-    console.print("[bold green]FORGE[/] Benchmark: Run")
-    if cartridge:
-        console.print(f"  Cartridge: {cartridge}")
-    if tag:
-        console.print(f"  Tag: {tag}")
-    console.print("Not yet implemented — see §8 for benchmark spec.")
+    from pathlib import Path
+
+    from forge.benchmark.runner import BenchmarkRunner
+
+    runner = BenchmarkRunner(project_root=Path("."))
+    run = runner.run(tag=tag or "default", cartridge_filter=cartridge)
+    console.print(f"[bold green]FORGE[/] {run.summary()}")
 
 
 @benchmark.command("compare")
@@ -444,11 +502,13 @@ def benchmark_compare(tag1: str, tag2: str) -> None:
 
     See: FORGE_ARCHITECTURE_v0.2.md §8.3
     """
-    # TODO: Load benchmark results by tag
-    # TODO: Compute deltas across cartridge results
-    # TODO: Display comparison table
-    console.print(f"[bold green]FORGE[/] Benchmark: Compare {tag1} vs {tag2}")
-    console.print("Not yet implemented — see §8.3 for results schema.")
+    from pathlib import Path
+
+    from forge.benchmark.runner import BenchmarkRunner
+
+    runner = BenchmarkRunner(project_root=Path("."))
+    report = runner.compare(tag1, tag2)
+    console.print(f"[bold green]FORGE[/] {report}")
 
 
 @benchmark.command("list")
@@ -457,10 +517,17 @@ def benchmark_list() -> None:
 
     See: FORGE_ARCHITECTURE_v0.2.md §8.2
     """
-    # TODO: Load cartridge-manifest.yaml
-    # TODO: Display cartridge list with difficulty classes
-    console.print("[bold green]FORGE[/] Benchmark: List")
-    console.print("Not yet implemented — see §8.2 for cartridge spec.")
+    from pathlib import Path
+
+    from forge.benchmark.runner import BenchmarkRunner
+
+    runner = BenchmarkRunner(project_root=Path("."))
+    carts = runner.list_cartridges()
+    console.print("[bold green]FORGE[/] Benchmark Cartridges:")
+    if not carts:
+        console.print("  No cartridges found in .forge/benchmarks/")
+    for c in carts:
+        console.print(f"  {c['id']}: {c.get('name', '')} [{c.get('difficulty_class', '')}]")
 
 
 # ---------------------------------------------------------------------------
@@ -504,11 +571,13 @@ def taxonomy() -> None:
 
     See: FORGE_ARCHITECTURE_v0.2.md §7.4
     """
-    # TODO: Query error_taxonomy table from DuckDB
-    # TODO: Compute distribution percentages
-    # TODO: Show trends vs previous period
-    console.print("[bold green]FORGE[/] Error Taxonomy")
-    console.print("Not yet implemented — see §7.4 for taxonomy spec.")
+    from pathlib import Path
+
+    from forge.boundary.measurement import BoundaryTracker
+
+    tracker = BoundaryTracker(project_root=Path("."))
+    report = tracker.generate_taxonomy()
+    console.print(f"[bold green]FORGE[/] {report}")
 
 
 @main.command()

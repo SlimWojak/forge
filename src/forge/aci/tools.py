@@ -184,11 +184,15 @@ class TestResult:
     for failed tests so the worker can act on failures directly.
     """
 
+    test_path: str
     status: str  # "pass" | "fail" | "error"
     passed: int
     failed: int
-    errors: list[dict[str, Any]]
-    coverage_delta: str | None = None
+    errors: int
+    skipped: int
+    duration_ms: int
+    failures: list[dict[str, Any]] = field(default_factory=list)
+    timed_out: bool = False
 
 
 @dataclass(frozen=True)
@@ -707,26 +711,128 @@ def run_command(
 def run_tests(
     test_path: str = "",
     timeout: int = 120,
+    cwd: str | None = None,
 ) -> TestResult:
     """Execute the project test suite (or specific test file/function).
 
-    Runs pytest by default. Captures structured pass/fail counts and
-    error details so the worker can directly act on failures.
+    Runs pytest and parses structured output. Captures pass/fail counts
+    and error details so the worker can directly act on failures.
 
     Args:
         test_path: Specific test file or function. Empty string = full suite.
-        timeout: Maximum execution time in seconds. Default 120.
+        timeout: Maximum execution time in seconds. Default 120, hard cap 600.
+        cwd: Working directory. None = current directory.
 
     Returns:
-        TestResult with status, counts, and error details.
+        TestResult with test_path, status, counts, duration_ms, failures, timed_out.
 
-    TODO: Implement pytest runner with structured output capture (§11.1).
-    TODO: Parse test output into structured error list.
-    TODO: Compute coverage delta if coverage is configured.
+    See: FORGE_ARCHITECTURE_v0.2.md §11.1
     """
-    timeout = min(timeout, 600)  # Hard cap at 10 minutes
+    import subprocess
+    import time
 
-    raise NotImplementedError("run_tests not yet implemented — see §11.1")
+    timeout = min(timeout, 600)
+
+    # Build pytest command with JSON report for structured output
+    cmd = ["python", "-m", "pytest", "--tb=short", "-q"]
+    if test_path:
+        cmd.append(test_path)
+
+    # Check if test path exists (when specified)
+    if test_path and not Path(test_path).exists():
+        return TestResult(
+            test_path=test_path,
+            status="error",
+            passed=0,
+            failed=0,
+            errors=0,
+            skipped=0,
+            duration_ms=0,
+            failures=[{
+                "test_name": "",
+                "message": f"Test path not found: {test_path}",
+                "file": test_path,
+                "line": 0,
+            }],
+        )
+
+    start = time.monotonic()
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=cwd,
+        )
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+    except subprocess.TimeoutExpired:
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        return TestResult(
+            test_path=test_path or ".",
+            status="error",
+            passed=0,
+            failed=0,
+            errors=0,
+            skipped=0,
+            duration_ms=elapsed_ms,
+            timed_out=True,
+        )
+
+    # Parse pytest output — strip ANSI codes first for reliable matching
+    import re
+
+    raw_output = result.stdout + result.stderr
+    ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
+    output = ansi_escape.sub("", raw_output)
+
+    passed = failed = errors = skipped = 0
+
+    summary_match = re.search(r"(\d+) passed", output)
+    if summary_match:
+        passed = int(summary_match.group(1))
+
+    fail_match = re.search(r"(\d+) failed", output)
+    if fail_match:
+        failed = int(fail_match.group(1))
+
+    err_match = re.search(r"(\d+) error", output)
+    if err_match:
+        errors = int(err_match.group(1))
+
+    skip_match = re.search(r"(\d+) skipped", output)
+    if skip_match:
+        skipped = int(skip_match.group(1))
+
+    # Parse failure details from short traceback summary
+    failures: list[dict[str, Any]] = []
+    fail_blocks = re.findall(
+        r"FAILED\s+(\S+?)(?:\s+-\s+(.+))?$",
+        output,
+        re.MULTILINE,
+    )
+    for test_name, message in fail_blocks:
+        failures.append({
+            "test_name": test_name,
+            "message": message or "Test failed",
+            "file": test_name.split("::")[0] if "::" in test_name else "",
+            "line": 0,
+        })
+
+    status = "pass" if result.returncode == 0 else "fail"
+    if errors > 0:
+        status = "error"
+
+    return TestResult(
+        test_path=test_path or ".",
+        status=status,
+        passed=passed,
+        failed=failed,
+        errors=errors,
+        skipped=skipped,
+        duration_ms=elapsed_ms,
+        failures=failures,
+    )
 
 
 # ---------------------------------------------------------------------------

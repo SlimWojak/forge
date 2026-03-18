@@ -14,11 +14,13 @@ from forge.aci.tools import (
     CommandResult,
     EditResult,
     SearchResult,
+    TestResult,
     ViewResult,
     _reset_view_positions,
     edit_file,
     rollback_edit,
     run_command,
+    run_tests,
     search_file,
     view_file,
 )
@@ -526,3 +528,97 @@ class TestRunCommandTimeout:
     def test_timeout_below_one_raises(self) -> None:
         with pytest.raises(ValueError, match="timeout must be >= 1"):
             run_command("echo x", timeout=0)
+
+
+# ---------------------------------------------------------------------------
+# F005: run_tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def passing_test_project(tmp_path: Path) -> Path:
+    """Create a minimal project with passing tests."""
+    test_dir = tmp_path / "tests"
+    test_dir.mkdir()
+    (test_dir / "test_sample.py").write_text(
+        "def test_one():\n    assert 1 + 1 == 2\n\n"
+        "def test_two():\n    assert True\n"
+    )
+    return tmp_path
+
+
+@pytest.fixture()
+def failing_test_project(tmp_path: Path) -> Path:
+    """Create a minimal project with a failing test."""
+    test_dir = tmp_path / "tests"
+    test_dir.mkdir()
+    (test_dir / "test_fail.py").write_text(
+        "def test_pass():\n    assert True\n\n"
+        "def test_fail():\n    assert 1 == 2\n"
+    )
+    return tmp_path
+
+
+class TestRunTestsPass:
+    """test_run_tests_pass — passing test suite."""
+
+    def test_returns_test_result(self, passing_test_project: Path) -> None:
+        result = run_tests(
+            str(passing_test_project / "tests"), cwd=str(passing_test_project)
+        )
+        assert isinstance(result, TestResult)
+
+    def test_pass_status(self, passing_test_project: Path) -> None:
+        result = run_tests(
+            str(passing_test_project / "tests"), cwd=str(passing_test_project)
+        )
+        assert result.status == "pass"
+        assert result.passed == 2
+        assert result.failed == 0
+        assert result.duration_ms > 0
+
+    def test_no_failures_list(self, passing_test_project: Path) -> None:
+        result = run_tests(
+            str(passing_test_project / "tests"), cwd=str(passing_test_project)
+        )
+        assert len(result.failures) == 0
+
+
+class TestRunTestsFail:
+    """test_run_tests_fail — failing test suite."""
+
+    def test_fail_status(self, failing_test_project: Path) -> None:
+        result = run_tests(
+            str(failing_test_project / "tests"), cwd=str(failing_test_project)
+        )
+        assert result.status == "fail"
+        assert result.failed >= 1
+        assert result.passed >= 1
+
+    def test_failures_have_details(self, failing_test_project: Path) -> None:
+        result = run_tests(
+            str(failing_test_project / "tests"), cwd=str(failing_test_project)
+        )
+        assert len(result.failures) >= 1
+        f = result.failures[0]
+        assert "test_name" in f
+        assert "message" in f
+
+
+class TestRunTestsTimeout:
+    """test_run_tests_timeout — timeout enforcement."""
+
+    def test_missing_test_path(self) -> None:
+        result = run_tests("/nonexistent/tests")
+        assert result.status == "error"
+        assert "not found" in result.failures[0]["message"]
+
+    def test_timed_out_flag(self, tmp_path: Path) -> None:
+        test_dir = tmp_path / "tests"
+        test_dir.mkdir()
+        (test_dir / "test_slow.py").write_text(
+            "import time\ndef test_slow():\n    time.sleep(60)\n"
+        )
+        result = run_tests(str(test_dir), timeout=2, cwd=str(tmp_path))
+        assert result.timed_out is True
+        assert result.status == "error"

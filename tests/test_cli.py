@@ -161,22 +161,23 @@ def test_init_command() -> None:
     assert "my-project" in result.output
 
 
-def test_task_command() -> None:
-    """Verify 'forge task' runs (stub output)."""
+def test_task_command(tmp_path, monkeypatch) -> None:
+    """Verify 'forge task' shows config error when no config exists."""
+    monkeypatch.chdir(tmp_path)
     runner = CliRunner()
     result = runner.invoke(main, ["task", "Implement login"])
-    assert result.exit_code == 0
-    assert "Implement login" in result.output
+    assert result.exit_code == 1
+    assert "config.yaml not found" in result.output
 
 
-def test_task_with_difficulty() -> None:
+def test_task_with_difficulty(tmp_path, monkeypatch) -> None:
     """Verify 'forge task --difficulty' accepts valid values."""
+    monkeypatch.chdir(tmp_path)
     runner = CliRunner()
     result = runner.invoke(
         main, ["task", "Fix types", "--difficulty", "mechanical"]
     )
-    assert result.exit_code == 0
-    assert "mechanical" in result.output
+    assert result.exit_code == 1
 
 
 def test_status_command() -> None:

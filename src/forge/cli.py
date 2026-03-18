@@ -79,21 +79,113 @@ def task(description: str, difficulty: str | None) -> None:
     """Execute a single task (simpler loop, no milestones).
 
     The task goes through the full lifecycle:
-    plan → execute → oracle → review → verdict → iterate/commit.
+    plan \u2192 execute \u2192 oracle \u2192 review \u2192 verdict \u2192 iterate/commit.
 
     Difficulty is classified by the planner model unless overridden
     with --difficulty.
 
-    See: FORGE_ARCHITECTURE_v0.2.md §2.1, §3
+    See: FORGE_ARCHITECTURE_v0.2.md \xa72.1, \xa73
     """
-    # TODO: Create task in state.json
-    # TODO: Classify difficulty (planner or manual override)
-    # TODO: Create worktree for task (§12.2)
-    # TODO: Enter orchestrator single-task loop (§3)
+    import os
+    import uuid
+    from pathlib import Path
+    from forge.config.loader import load_config
+    from forge.models.provider import ModelProvider
+    from forge.models.adapter import LocalModelAdapter
+    from forge.aci.worker import run_worker
+    from forge.oracle.generator import OracleGenerator
+    from forge.gate.engine import GateEngine
+    from forge.orchestrator.task_loop import run_task_loop, WorkerOutput
+
+    project_root = Path(".")
     console.print(f"[bold green]FORGE[/] Task: {description}")
+
+    try:
+        cfg = load_config(project_root)
+    except FileNotFoundError:
+        console.print("[red]Error:[/] .forge/config.yaml not found. Run forge init first.")
+        raise SystemExit(1)
+
+    provider = ModelProvider(config=cfg)
+    worker_adapter = LocalModelAdapter(provider, role="worker")
+
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        reviewer_adapter = LocalModelAdapter(provider, role="reviewer")
+    else:
+        console.print("  [yellow]No ANTHROPIC_API_KEY \u2014 using local model as reviewer[/]")
+        reviewer_adapter = LocalModelAdapter(provider, role="worker")
+
+    task_id = f"task-{uuid.uuid4().hex[:8]}"
+    cwd = str(project_root.resolve())
+
+    class _WorkerRunnerImpl:
+        def run(self, task_description: str, todo_context: str | None = None) -> WorkerOutput:
+            full_desc = task_description
+            if todo_context:
+                full_desc = task_description + "\n\n" + todo_context
+            console.print("  [cyan]Worker executing...[/]")
+            result = run_worker(full_desc, model=worker_adapter, cwd=cwd)
+            console.print(f"  [cyan]Worker done:[/] {result.iterations} iter, {len(result.tool_calls)} tool calls")
+            if result.error:
+                console.print(f"  [red]Worker error:[/] {result.error}")
+            return WorkerOutput(
+                completed=result.completed,
+                final_message=result.final_message or "",
+                tool_calls_count=len(result.tool_calls),
+                error=result.error,
+            )
+
+    class _OracleBuilderImpl:
+        def __init__(self):
+            self._gen = OracleGenerator(project_root=project_root)
+
+        def build(self, task_id: str, iteration: int, worker_message: str):
+            console.print(f"  [yellow]Generating Oracle (iteration {iteration})...[/]")
+            try:
+                orc = self._gen.build_oracle(
+                    task_id=task_id,
+                    task_description=description,
+                    worker_model="Qwen/Qwen3.5-35B-A3B-GPTQ-Int4",
+                    worker_assessment=worker_message,
+                )
+                console.print("  [yellow]Oracle ready[/]")
+                return orc
+            except Exception as e:
+                console.print(f"  [red]Oracle error:[/] {e}")
+                raise
+
+    gate = GateEngine(
+        config=cfg.get("gate", {}),
+        project_root=project_root,
+        reviewer=reviewer_adapter,
+    )
+
+    console.print(f"  Task ID: {task_id}")
     if difficulty:
         console.print(f"  Difficulty override: {difficulty}")
-    console.print("Not yet implemented — see §3 for orchestrator spec.")
+
+    result = run_task_loop(
+        task_id=task_id,
+        task_description=description,
+        worker=_WorkerRunnerImpl(),
+        oracle_builder=_OracleBuilderImpl(),
+        gate=gate,
+        max_iterations=cfg.get("gate", {}).get("max_iterations", 3),
+    )
+
+    if result.passed:
+        console.print(f"\n[bold green]PASS[/] after {result.iterations} iteration(s)")
+        console.print(f"  Wall clock: {result.wall_clock_ms:,}ms")
+        console.print(f"  Tool calls: {result.total_tool_calls}")
+        if result.proposal:
+            console.print(f"  [yellow]Shadow mode:[/] Commit proposed.")
+    else:
+        console.print(f"\n[bold red]FAIL[/] after {result.iterations} iteration(s)")
+        if result.recovery_mode:
+            console.print("  [red]Recovery mode activated[/]")
+        if result.failure_summary:
+            console.print(f"  {result.failure_summary}")
+        console.print(f"  Wall clock: {result.wall_clock_ms:,}ms")
 
 
 @main.command()
@@ -203,15 +295,35 @@ def oracle(task_id: str | None) -> None:
 
     See: FORGE_ARCHITECTURE_v0.2.md §4
     """
-    # TODO: If task_id given, display existing Oracle
-    # TODO: If no task_id, generate Oracle for current task
-    # TODO: Run Oracle pipeline: diff → codemap → checks → assemble (§4.4)
+    import json as _json
+    from pathlib import Path as _Path
+    from forge.oracle.generator import OracleGenerator as _OG
+
+    project_root = _Path(".")
     console.print("[bold green]FORGE[/] Oracle")
+
     if task_id:
-        console.print(f"  Displaying Oracle for task: {task_id}")
-    else:
-        console.print("  Generating Oracle for current task...")
-    console.print("Not yet implemented — see §4 for Oracle spec.")
+        oracle_dir = project_root / ".forge" / "oracles"
+        if oracle_dir.exists():
+            matches = list(oracle_dir.glob(f"*{task_id}*.json"))
+            if matches:
+                data = _json.loads(matches[0].read_text())
+                console.print_json(_json.dumps(data, indent=2))
+                return
+        console.print(f"  No Oracle found for task: {task_id}")
+        return
+
+    try:
+        gen = _OG(project_root=project_root)
+        oracle_obj = gen.build_oracle(
+            task_id="manual",
+            task_description="Manual oracle generation",
+            worker_model="local",
+            worker_assessment="Manual run",
+        )
+        console.print_json(_json.dumps(oracle_obj.to_json(), indent=2))
+    except Exception as e:
+        console.print(f"  [red]Oracle generation error:[/] {e}")
 
 
 @main.command()
@@ -224,15 +336,10 @@ def review(task_id: str | None) -> None:
 
     See: FORGE_ARCHITECTURE_v0.2.md §5.3
     """
-    # TODO: Load Oracle for task (§4)
-    # TODO: Send to frontier reviewer via Gate Engine (§5.3)
-    # TODO: Display verdict and TODO items if FAIL
     console.print("[bold green]FORGE[/] Review")
-    if task_id:
-        console.print(f"  Reviewing task: {task_id}")
-    else:
-        console.print("  Reviewing current task...")
-    console.print("Not yet implemented — see §5.3 for gate flow spec.")
+    console.print("  Note: Frontier review requires ANTHROPIC_API_KEY.")
+    console.print("  For bootstrap testing, review happens inside forge task loop.")
+    console.print("  Standalone review: Phase 2+ feature.")
 
 
 # ---------------------------------------------------------------------------

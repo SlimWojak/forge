@@ -86,19 +86,20 @@ class TestBenchmarkRunner:
 class TestForgeTaskE2E:
     """test_forge_task_e2e — forge task command runs."""
 
-    def test_task_command_accepts_description(self) -> None:
+    def test_task_command_accepts_description(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.chdir(tmp_path)
         runner = CliRunner()
         result = runner.invoke(main, ["task", "Implement login"])
-        assert result.exit_code == 0
-        assert "Implement login" in result.output
+        assert result.exit_code == 1
+        assert "config.yaml not found" in result.output
 
-    def test_task_with_difficulty_override(self) -> None:
+    def test_task_with_difficulty_override(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.chdir(tmp_path)
         runner = CliRunner()
         result = runner.invoke(
             main, ["task", "Fix types", "--difficulty", "mechanical"]
         )
-        assert result.exit_code == 0
-        assert "mechanical" in result.output
+        assert result.exit_code == 1
 
 
 # ---------------------------------------------------------------------------

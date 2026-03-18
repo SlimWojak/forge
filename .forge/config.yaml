@@ -20,8 +20,8 @@ forge_version: "0.2"
 models:
   local:
     planner:
-      endpoint: "http://localhost:11434/v1"
-      model: "nemotron"  # Nemotron 3 Super 120B — pulled via Ollama
+      endpoint: "http://localhost:8000/v1"
+      model: "Qwen/Qwen3.5-35B-A3B-GPTQ-Int4"
       role: "Mission decomposition, milestone planning, quality review"
       max_tokens: 8192
       temperature: 0.3
@@ -29,8 +29,8 @@ models:
       # Leaves ample room for worker inference in parallel.
 
     worker:
-      endpoint: "http://localhost:11434/v1"
-      model: "nemotron"  # Same model, same endpoint — Ollama handles concurrency.
+      endpoint: "http://localhost:8000/v1"
+      model: "Qwen/Qwen3.5-35B-A3B-GPTQ-Int4"
       role: "Code generation, test writing, bug fixing, lint resolution"
       max_tokens: 4096
       temperature: 0.2

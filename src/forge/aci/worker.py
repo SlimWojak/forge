@@ -211,11 +211,23 @@ def _serialize_tool_result(result: Any) -> str:
             "timed_out": result.timed_out,
             "blocked": result.blocked,
         })
+    elif isinstance(result, TestResult):
+        return json.dumps({
+            "test_path": result.test_path,
+            "status": result.status,
+            "passed": result.passed,
+            "failed": result.failed,
+            "errors": result.errors,
+            "skipped": result.skipped,
+            "duration_ms": result.duration_ms,
+            "timed_out": result.timed_out,
+        })
+    elif isinstance(result, CodemapResult):
+        return json.dumps({"files": result.files})
     elif isinstance(result, dict):
         return json.dumps(result)
     else:
         return json.dumps({"result": str(result)})
-
 
 # ---------------------------------------------------------------------------
 # Tool dispatcher

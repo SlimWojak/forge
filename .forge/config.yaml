@@ -1,0 +1,132 @@
+# FORGE v0.2 Master Configuration
+# See: FORGE_ARCHITECTURE_v0.2.md §13.1
+#
+# All paths are relative to the project root unless absolute.
+# API keys are referenced as environment variable names — never plaintext.
+
+forge_version: "0.2"
+
+# ─── Model Configuration ───
+# Each role maps to a model endpoint. Local models use OpenAI-compatible API.
+# Frontier models use provider-specific APIs with keys from env vars.
+models:
+  local:
+    planner:
+      endpoint: "http://dgx-spark-1:8000/v1"
+      model: "nemotron-3-super-120b"
+      role: "Mission decomposition, milestone planning, quality review"
+      max_tokens: 8192
+      temperature: 0.3
+
+    worker:
+      endpoint: "http://dgx-spark-2:8000/v1"
+      model: "qwen3.5-35b"
+      role: "Code generation, test writing, bug fixing, lint resolution"
+      max_tokens: 4096
+      temperature: 0.2
+      lora_path: null  # Path to LoRA adapter if fine-tuned
+
+  frontier:
+    reviewer:
+      provider: "anthropic"
+      model: "claude-sonnet-4.6"
+      api_key_env: "ANTHROPIC_API_KEY"
+      role: "Primary reviewer (Phase 1)"
+
+    escalation_reviewer:
+      provider: "openai"
+      model: "gpt-5.3-codex"
+      api_key_env: "OPENAI_API_KEY"
+      role: "Escalation reviewer (on 2nd failure)"
+
+    # Phase 2+ only — chairman synthesis
+    chairman:
+      provider: "anthropic"
+      model: "claude-opus-4.6"
+      api_key_env: "ANTHROPIC_API_KEY"
+      role: "Chairman synthesis (Phase 2+)"
+
+    # Optional — intelligence/research role (Grok)
+    intelligence:
+      provider: "xai"
+      model: "grok-3"
+      api_key_env: "XAI_API_KEY"
+      role: "Web/community research (not code review)"
+
+# ─── Gate Configuration ───
+# Controls review routing, iteration limits, and shadow mode.
+gate:
+  phase: 1
+  shadow_mode: true  # Phase 1: always true. Human merges every commit.
+  default_reviewer: "reviewer"  # References models.frontier.reviewer
+  escalation_reviewer: "escalation_reviewer"
+  max_iterations: 3  # Max review iterations before recovery mode
+  recovery_threshold: 3  # Consecutive failures to trigger recovery
+
+  # Phase 2+ trust parameters (designed but not active in Phase 1)
+  trust:
+    consecutive_successes_to_promote: 10
+    failure_reset_factor: 0.5
+    architectural_drift_reset: true  # Full trust reset on architectural-drift
+    sensitive_paths:
+      - "src/auth/**"
+      - "src/payments/**"
+      - "src/config/**"
+      - "migrations/**"
+    auto_merge_min_trust: 0.95
+    auto_merge_max_blast_radius: "low"
+
+# ─── Enforcement Configuration ───
+# Three layers: hooks (L1), architectural linters (L2), Desloppify (L3a/L3b)
+enforcement:
+  hooks_file: ".forge/hooks.yaml"
+  architecture_file: ".forge/architecture.yaml"
+
+  desloppify:
+    mechanical:
+      enabled: true
+      run_on: "post_commit"  # Runs in post-commit hook
+      thresholds:
+        dead_code_max: 5
+        duplication_max: 3
+        complexity_max: 10        # Cyclomatic complexity per function
+        function_length_max: 50   # Lines per function body
+        nesting_depth_max: 4      # Max indent level
+
+    subjective:
+      enabled: true
+      run_on: "milestone_boundary"  # Runs when GPU is free
+      min_score_to_advance: 60     # Score threshold to advance milestone
+      model: "planner"             # Uses planner model for quality review
+
+# ─── Benchmark Configuration ───
+# Fixed task suite for controlled harness comparison.
+benchmarks:
+  cartridge_dir: ".forge/benchmarks"
+  results_dir: ".forge/benchmark-results"
+  default_timeout_seconds: 600
+  max_iterations_per_cartridge: 5
+
+# ─── Observability Configuration ───
+# OpenTelemetry → DuckDB pipeline for traces, metrics, and boundary data.
+observability:
+  trace_db: ".forge/traces/forge.duckdb"
+  boundary_data: ".forge/boundary-data.jsonl"
+  shadow_log: ".forge/shadow-log.jsonl"
+  digest:
+    enabled: true
+    schedule: "daily"  # Generate at end of day
+    output_dir: ".forge/digests"
+
+# ─── Skill Configuration ───
+# Crystallization pipeline settings and promotion thresholds.
+skills:
+  prompts_dir: ".forge/skills/prompts"
+  patterns_dir: ".forge/skills/patterns"
+  max_injected_skills: 5       # Max skills injected per task
+  max_injection_tokens: 500    # Token budget for skill injection
+  promotion:
+    tier0_to_tier1_observations: 2   # Same pattern seen N times → Tier 1
+    tier1_to_tier2_applications: 5   # Applied successfully M times → Tier 2
+    tier2_to_tier3_applications: 10  # Stable for P applications → Tier 3
+    tier3_requires_human_approval: true  # Phase 1 safety: human approves Tier 3

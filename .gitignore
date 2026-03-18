@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+dist/
+build/
+*.whl
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# FORGE state (harness-local, not committed)
+.forge/state.json
+.forge/traces/
+.forge/training/
+.forge/oracles/
+.forge/verdicts/
+.forge/boundary-data.jsonl
+.forge/shadow-log.jsonl
+.forge/benchmark-results/
+.forge/digests/
+.forge/decisions/
+.forge/blocked/
+.forge/tools/*.pyc
+
+# Worktrees (isolated working copies)
+.forge-worktrees/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+
+# Ruff
+.ruff_cache/

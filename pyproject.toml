@@ -1,0 +1,53 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "forge-ai"
+version = "0.2.0"
+description = "CLI-first agentic harness for frontier/local model orchestration in software engineering"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [
+    { name = "Craig @ a8ra / SlimWojak" },
+]
+
+dependencies = [
+    "click>=8.1",
+    "rich>=13.0",
+    "pyyaml>=6.0",
+    "duckdb>=0.10",
+    "opentelemetry-api>=1.20",
+    "opentelemetry-sdk>=1.20",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+treesitter = [
+    "tree-sitter>=0.21",
+    "tree-sitter-languages>=1.10",
+]
+tui = ["textual>=0.50"]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.3",
+]
+
+[project.scripts]
+forge = "forge.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/forge"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

@@ -1,0 +1,276 @@
+{
+  "version": "0.2",
+  "created": "2026-03-18",
+  "created_by": "Phase 0 (P + Craig)",
+  "description": "Immutable feature list for FORGE. Agents MUST NOT delete or modify feature descriptions or success criteria. Mark passes: true when a feature is complete with all criteria met.",
+
+  "phase_1": {
+    "description": "Core task execution loop. Implemented by Factory.ai Mission.",
+    "milestone_1": {
+      "name": "ACI Tools & Worker Agent",
+      "features": [
+        {
+          "id": "F001",
+          "name": "view_file tool",
+          "description": "Stateful file viewer that shows num_lines lines starting from start_line, with line numbers. Remembers position across calls within a session. Returns structured ViewResult JSON.",
+          "success_criteria": [
+            "Returns JSON with path, start_line, end_line, total_lines, content (with line numbers), truncated flag",
+            "Bounds checking: cannot read beyond file length, max 200 lines per call",
+            "Position memory: calling view_file(path) without start_line continues from last position",
+            "Handles binary files gracefully (returns error, does not crash)",
+            "Test: test_view_file_basic, test_view_file_bounds, test_view_file_position_memory, test_view_file_binary"
+          ],
+          "passes": false
+        },
+        {
+          "id": "F002",
+          "name": "edit_file tool",
+          "description": "Replace lines start_line:end_line with new_content. Runs lint check BEFORE applying. Rejects edits that introduce syntax errors. Returns structured EditResult JSON.",
+          "success_criteria": [
+            "Returns JSON with path, start_line, end_line, lines_added, lines_removed, lint_status, applied flag",
+            "Lint check runs before applying edit — if lint fails, edit is NOT applied and error is returned with line/column",
+            "Supports Python (.py) and TypeScript (.ts) lint checking at minimum",
+            "Creates backup before applying (for rollback)",
+            "Test: test_edit_file_basic, test_edit_file_lint_reject, test_edit_file_rollback"
+          ],
+          "passes": false
+        },
+        {
+          "id": "F003",
+          "name": "search_file tool",
+          "description": "Search for regex or literal pattern in a file. Returns max max_results matches with surrounding context. Returns structured SearchResult JSON.",
+          "success_criteria": [
+            "Returns JSON with path, pattern, matches (array of {line_number, content, context_before, context_after}), total_matches, truncated flag",
+            "Max 50 results by default, configurable",
+            "Context: 2 lines before and after each match",
+            "Supports regex and literal modes",
+            "Test: test_search_file_literal, test_search_file_regex, test_search_file_bounds"
+          ],
+          "passes": false
+        },
+        {
+          "id": "F004",
+          "name": "run_command tool",
+          "description": "Execute a shell command with timeout and allowlist checking. Returns structured CommandResult JSON.",
+          "success_criteria": [
+            "Returns JSON with command, exit_code, stdout (truncated to 5000 chars), stderr (truncated to 2000 chars), duration_ms, timed_out flag",
+            "Allowlist enforcement: blocks commands matching dangerous patterns (rm -rf, curl|bash, sudo, etc.)",
+            "Timeout enforcement: kills process after timeout seconds",
+            "Test: test_run_command_basic, test_run_command_blocked, test_run_command_timeout"
+          ],
+          "passes": false
+        },
+        {
+          "id": "F005",
+          "name": "run_tests tool",
+          "description": "Execute test suite (pytest) and return structured results. Returns structured TestResult JSON.",
+          "success_criteria": [
+            "Returns JSON with test_path, passed, failed, errors, skipped, duration_ms, failures (array of {test_name, message, file, line})",
+            "Timeout enforcement",
+            "Handles missing test directory gracefully",
+            "Test: test_run_tests_pass, test_run_tests_fail, test_run_tests_timeout"
+          ],
+          "passes": false
+        },
+        {
+          "id": "F006",
+          "name": "codemap tool (tree-sitter)",
+          "description": "Generate structural summary of a file using tree-sitter. Returns function/class/type signatures without implementation bodies. 10x token savings vs full file content.",
+          "success_criteria": [
+            "Returns JSON with path, language, symbols (array of {name, kind, signature, start_line, end_line})",
+            "Supports Python and TypeScript at minimum",
+            "Extracts: function signatures, class definitions, type aliases, imports",
+            "Does NOT include function bodies — signatures only",
+            "Test: test_codemap_python, test_codemap_typescript, test_codemap_unsupported_language"
+          ],
+          "passes": false
+        },
+        {
+          "id": "F007",
+          "name": "Worker agent loop",
+          "description": "Agent that receives a task description, uses ACI tools to implement it, and produces a git commit. Uses the configured local model via OpenAI-compatible API.",
+          "success_criteria": [
+            "Accepts task description as input",
+            "Calls ACI tools via structured function calling (OpenAI tool_call format)",
+            "Produces at least one git commit with descriptive message in FORGE format",
+            "Handles tool errors gracefully (retries or reports)",
+            "Bounded: stops after max_iterations (configurable, default 20) or max_tokens (configurable)",
+            "Records all tool calls and model responses in trace",
+            "Test: test_worker_simple_task (with mock model and mock filesystem)"
+          ],
+          "passes": false
+        }
+      ]
+    },
+    "milestone_2": {
+      "name": "Oracle & Gate",
+      "features": [
+        {
+          "id": "F008",
+          "name": "Oracle generator",
+          "description": "Generate a Core Oracle snapshot after task completion. Produces structured JSON matching the Oracle schema from Architecture §4.",
+          "success_criteria": [
+            "Generates diff summary (files_changed, insertions, deletions, patch)",
+            "Generates codemap of changed files via tree-sitter",
+            "Runs mechanical checks (lint, tests at minimum)",
+            "Includes quality delta (desloppify mechanical score before vs after)",
+            "Prompts worker model for self-assessment",
+            "Packages all into CoreOracle JSON matching schema",
+            "Token estimate: Core Oracle is 2-4K tokens for typical tasks",
+            "Test: test_oracle_generation (with a real diff fixture)"
+          ],
+          "passes": false
+        },
+        {
+          "id": "F009",
+          "name": "Gate engine (Phase 1: single reviewer)",
+          "description": "Send Oracle to a single frontier reviewer. Process structured verdict. PASS → merge. FAIL → return TODO to worker.",
+          "success_criteria": [
+            "Sends Core Oracle to configured frontier reviewer model",
+            "Reviewer receives structured prompt with Oracle + review instructions",
+            "Parses reviewer response into Verdict dataclass (status, issues, todos)",
+            "On PASS: returns approval signal",
+            "On FAIL: extracts structured TODOs (file, line, issue, fix_description, priority)",
+            "On AMBIGUOUS: escalates to second reviewer (if configured)",
+            "Handles API errors gracefully (retry with backoff)",
+            "Test: test_gate_pass, test_gate_fail, test_gate_api_error (with mock API)"
+          ],
+          "passes": false
+        },
+        {
+          "id": "F010",
+          "name": "Task iteration loop",
+          "description": "Complete loop: worker → oracle → gate → if FAIL iterate → if PASS merge. With recovery mode after N failures.",
+          "success_criteria": [
+            "Orchestrates: worker executes → oracle generated → gate reviews → verdict",
+            "On PASS: squash-merge to main with structured commit message",
+            "On FAIL: feeds TODO back to worker, re-executes, re-oracles, re-reviews",
+            "Recovery mode: after 3 consecutive failures, generates failure summary and stops (does not thrash)",
+            "Shadow mode: in Phase 1, proposes merge but waits for human confirmation",
+            "Records iteration count, tokens consumed (local + frontier), wall-clock time",
+            "Test: test_loop_pass_first_try, test_loop_fail_then_pass, test_loop_recovery_mode (with mocks)"
+          ],
+          "passes": false
+        }
+      ]
+    },
+    "milestone_3": {
+      "name": "Measurement & Quality",
+      "features": [
+        {
+          "id": "F011",
+          "name": "Trace system",
+          "description": "Record all model calls, tool calls, and decisions in DuckDB. Support queries for metrics and boundary measurement.",
+          "success_criteria": [
+            "DuckDB database created at .forge/traces/forge.duckdb",
+            "Records: model calls (model, role, tokens_in, tokens_out, latency_ms, outcome)",
+            "Records: tool calls (tool_name, args, result_summary, duration_ms)",
+            "Records: task outcomes (task_id, iterations, pass_fail, error_taxonomy tags)",
+            "Queryable via SQL",
+            "Test: test_trace_record, test_trace_query"
+          ],
+          "passes": false
+        },
+        {
+          "id": "F012",
+          "name": "Error taxonomy tagging",
+          "description": "Tag every task failure with one or more error taxonomy categories. Categories: tool_misuse, navigation_failure, incorrect_logic, missing_tests, architectural_drift, context_confusion, flaky_validation.",
+          "success_criteria": [
+            "Frontier reviewer includes error_taxonomy tags in FAIL verdicts",
+            "Tags stored in trace database alongside task outcome",
+            "forge metrics shows error taxonomy distribution",
+            "Test: test_error_taxonomy_tagging (with mock verdict containing tags)"
+          ],
+          "passes": false
+        },
+        {
+          "id": "F013",
+          "name": "Boundary measurement",
+          "description": "Track frontier/local boundary data. Record which tasks passed locally first-try vs needed frontier correction.",
+          "success_criteria": [
+            "BoundaryRecord created for every completed task: task_type, local_model, first_pass_success, iterations_to_pass, frontier_tokens_consumed, error_taxonomy_tags, correction_description",
+            "forge boundary command outputs summary: first-pass rate, iteration distribution, error taxonomy breakdown, frontier cost per task",
+            "Data stored in DuckDB for querying",
+            "Test: test_boundary_record, test_boundary_summary"
+          ],
+          "passes": false
+        },
+        {
+          "id": "F014",
+          "name": "Benchmark cartridge runner",
+          "description": "Run a fixed set of benchmark tasks against the current harness configuration. Produce comparable results.",
+          "success_criteria": [
+            "Reads benchmark tasks from .forge/benchmarks/*.yaml",
+            "Executes each task through the full loop (worker → oracle → gate → verdict)",
+            "Records results per task: pass/fail, iterations, tokens, time, error taxonomy",
+            "forge benchmark command runs the suite and outputs results table",
+            "Results stored in .forge/benchmark-results/ for comparison across runs",
+            "Test: test_benchmark_runner (with 2-3 simple fixture tasks)"
+          ],
+          "passes": false
+        },
+        {
+          "id": "F015",
+          "name": "Desloppify mechanical scan",
+          "description": "Tree-sitter based mechanical quality scan. Detects dead code, duplication, complexity. Zero GPU cost.",
+          "success_criteria": [
+            "Scans Python files using tree-sitter",
+            "Detects: unused imports, unused variables, duplicate function signatures, high cyclomatic complexity (>10)",
+            "Produces score (0-100) and issue list",
+            "forge quality command runs scan and displays results",
+            "Score delta tracked between runs (stored in .forge/quality/)",
+            "Test: test_mechanical_scan (with fixture files containing known issues)"
+          ],
+          "passes": false
+        },
+        {
+          "id": "F016",
+          "name": "forge task CLI command (end-to-end)",
+          "description": "The complete forge task command that ties everything together.",
+          "success_criteria": [
+            "forge task 'description' runs the full loop from CLI",
+            "Configurable model assignments via .forge/config.yaml",
+            "Outputs progress to terminal (task started, oracle generated, review result, iteration count)",
+            "On completion: outputs summary (pass/fail, iterations, tokens, frontier cost)",
+            "Shadow mode: prints proposed commit and waits for user confirmation before merging",
+            "Trace data recorded for every run",
+            "Test: test_forge_task_e2e (integration test with mock models)"
+          ],
+          "passes": false
+        },
+        {
+          "id": "F017",
+          "name": "forge status and forge metrics commands",
+          "description": "Status shows current state. Metrics shows accumulated measurement data.",
+          "success_criteria": [
+            "forge status: current task state, feature_list progress, recent activity",
+            "forge metrics: total tasks run, first-pass rate, iteration distribution, error taxonomy breakdown, frontier/local token split, cost summary",
+            "Both read from DuckDB trace database",
+            "Test: test_status_command, test_metrics_command"
+          ],
+          "passes": false
+        }
+      ]
+    }
+  },
+
+  "phase_2_plus": {
+    "description": "Advanced features. Implemented by Claw builder with FORGE self-review. NOT in scope for Factory.ai.",
+    "features": [
+      {"id": "F100", "name": "Mission decomposition (forge mission)", "passes": false},
+      {"id": "F101", "name": "Git worktree isolation per task", "passes": false},
+      {"id": "F102", "name": "Milestone validation with E2E tests", "passes": false},
+      {"id": "F103", "name": "Full Board review (independent reviewers + chairman)", "passes": false},
+      {"id": "F104", "name": "Trust × Blast-Radius adaptive gate", "passes": false},
+      {"id": "F105", "name": "Difficulty classifier", "passes": false},
+      {"id": "F106", "name": "Skill crystallization pipeline (Tiers 1-3)", "passes": false},
+      {"id": "F107", "name": "Architectural linter system", "passes": false},
+      {"id": "F108", "name": "Desloppify subjective (LLM) review", "passes": false},
+      {"id": "F109", "name": "TUI dashboard (Textual)", "passes": false},
+      {"id": "F110", "name": "Daily digest generation", "passes": false},
+      {"id": "F111", "name": "Research vs. delivery mission modes", "passes": false},
+      {"id": "F112", "name": "LoRA fine-tuning data export", "passes": false},
+      {"id": "F113", "name": "Grok Intelligence role integration", "passes": false}
+    ]
+  }
+}

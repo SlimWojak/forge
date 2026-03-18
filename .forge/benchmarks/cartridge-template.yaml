@@ -1,0 +1,55 @@
+# FORGE Benchmark Cartridge Template
+# Copy this file into a new directory under .forge/benchmarks/
+# and customize for your benchmark task.
+#
+# See: FORGE_ARCHITECTURE_v0.2.md §8.2
+
+# ─── Task Definition ───
+id: "my-cartridge-01"
+name: "Short descriptive name"
+description: |
+  Detailed description of the task the worker must complete.
+  Be specific about:
+  - What to build/fix/change
+  - Which files to modify
+  - What patterns to follow
+  - Expected behavior after completion
+
+difficulty_class: "mechanical"  # mechanical | local-reasoning | architectural | uncertain
+category: "add-endpoint"       # See README.md for full category list
+estimated_tokens: 30000        # Estimated local model tokens for completion
+timeout_seconds: 600           # Maximum wall-clock time for the task
+max_iterations: 5              # Maximum review iterations before failure
+
+# ─── Success Criteria ───
+# Mechanical checks that must pass for the cartridge to succeed.
+success_criteria:
+  mechanical_checks:
+    lint: must_pass
+    type_check: must_pass
+    tests: must_pass
+    build: must_pass
+
+  required_files:
+    - pattern: "src/**/*.py"   # Glob pattern for files that must exist
+      min_count: 1
+
+  required_tests:
+    - pattern: "tests/**/*.py"
+      must_contain: []         # Strings that must appear in test files
+      min_count: 1
+
+  # Optional: required API endpoints (for web projects)
+  # required_endpoints:
+  #   - method: GET
+  #     path: "/api/resource"
+  #   - method: POST
+  #     path: "/api/resource"
+
+# ─── Repo Snapshot ───
+# How to set up the starting state for this cartridge.
+# Use one of:
+#   repo_snapshot: "repo-snapshot.tar.gz"  # Tarball of starting state
+#   git_ref: "abc123"                       # Git commit to start from
+repo_snapshot: null
+git_ref: null

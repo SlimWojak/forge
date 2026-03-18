@@ -36,7 +36,7 @@ source .venv/bin/activate
 # --- Step 2: Install dependencies ---
 echo "→ Installing forge in editable mode with dev dependencies..."
 pip install --upgrade pip --quiet
-pip install -e ".[dev]" --quiet
+pip install -e ".[dev,treesitter]" --quiet
 echo "  Installed forge-ai and dev dependencies."
 
 # --- Step 3: Create .forge/ state directory ---

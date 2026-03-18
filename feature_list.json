@@ -20,7 +20,7 @@
             "Handles binary files gracefully (returns error, does not crash)",
             "Test: test_view_file_basic, test_view_file_bounds, test_view_file_position_memory, test_view_file_binary"
           ],
-          "passes": false
+          "passes": true
         },
         {
           "id": "F002",
@@ -33,7 +33,7 @@
             "Creates backup before applying (for rollback)",
             "Test: test_edit_file_basic, test_edit_file_lint_reject, test_edit_file_rollback"
           ],
-          "passes": false
+          "passes": true
         },
         {
           "id": "F003",
@@ -46,7 +46,7 @@
             "Supports regex and literal modes",
             "Test: test_search_file_literal, test_search_file_regex, test_search_file_bounds"
           ],
-          "passes": false
+          "passes": true
         },
         {
           "id": "F004",
@@ -58,7 +58,7 @@
             "Timeout enforcement: kills process after timeout seconds",
             "Test: test_run_command_basic, test_run_command_blocked, test_run_command_timeout"
           ],
-          "passes": false
+          "passes": true
         },
         {
           "id": "F005",
@@ -70,7 +70,7 @@
             "Handles missing test directory gracefully",
             "Test: test_run_tests_pass, test_run_tests_fail, test_run_tests_timeout"
           ],
-          "passes": false
+          "passes": true
         },
         {
           "id": "F006",
@@ -83,7 +83,7 @@
             "Does NOT include function bodies — signatures only",
             "Test: test_codemap_python, test_codemap_typescript, test_codemap_unsupported_language"
           ],
-          "passes": false
+          "passes": true
         },
         {
           "id": "F007",
@@ -98,7 +98,7 @@
             "Records all tool calls and model responses in trace",
             "Test: test_worker_simple_task (with mock model and mock filesystem)"
           ],
-          "passes": false
+          "passes": true
         }
       ]
     },
@@ -119,7 +119,7 @@
             "Token estimate: Core Oracle is 2-4K tokens for typical tasks",
             "Test: test_oracle_generation (with a real diff fixture)"
           ],
-          "passes": false
+          "passes": true
         },
         {
           "id": "F009",
@@ -135,7 +135,7 @@
             "Handles API errors gracefully (retry with backoff)",
             "Test: test_gate_pass, test_gate_fail, test_gate_api_error (with mock API)"
           ],
-          "passes": false
+          "passes": true
         },
         {
           "id": "F010",
@@ -150,7 +150,7 @@
             "Records iteration count, tokens consumed (local + frontier), wall-clock time",
             "Test: test_loop_pass_first_try, test_loop_fail_then_pass, test_loop_recovery_mode (with mocks)"
           ],
-          "passes": false
+          "passes": true
         }
       ]
     },
@@ -169,7 +169,7 @@
             "Queryable via SQL",
             "Test: test_trace_record, test_trace_query"
           ],
-          "passes": false
+          "passes": true
         },
         {
           "id": "F012",
@@ -181,7 +181,7 @@
             "forge metrics shows error taxonomy distribution",
             "Test: test_error_taxonomy_tagging (with mock verdict containing tags)"
           ],
-          "passes": false
+          "passes": true
         },
         {
           "id": "F013",
@@ -193,7 +193,7 @@
             "Data stored in DuckDB for querying",
             "Test: test_boundary_record, test_boundary_summary"
           ],
-          "passes": false
+          "passes": true
         },
         {
           "id": "F014",
@@ -207,7 +207,7 @@
             "Results stored in .forge/benchmark-results/ for comparison across runs",
             "Test: test_benchmark_runner (with 2-3 simple fixture tasks)"
           ],
-          "passes": false
+          "passes": true
         },
         {
           "id": "F015",
@@ -221,7 +221,7 @@
             "Score delta tracked between runs (stored in .forge/quality/)",
             "Test: test_mechanical_scan (with fixture files containing known issues)"
           ],
-          "passes": false
+          "passes": true
         },
         {
           "id": "F016",
@@ -236,7 +236,7 @@
             "Trace data recorded for every run",
             "Test: test_forge_task_e2e (integration test with mock models)"
           ],
-          "passes": false
+          "passes": true
         },
         {
           "id": "F017",
@@ -248,7 +248,7 @@
             "Both read from DuckDB trace database",
             "Test: test_status_command, test_metrics_command"
           ],
-          "passes": false
+          "passes": true
         }
       ]
     }

@@ -12,10 +12,12 @@ import pytest
 
 from forge.aci.tools import (
     EditResult,
+    SearchResult,
     ViewResult,
     _reset_view_positions,
     edit_file,
     rollback_edit,
+    search_file,
     view_file,
 )
 
@@ -329,3 +331,116 @@ class TestEditFileRollback:
         edit_file(str(python_file), 3, 4, "def broken(:\n    pass")
         backup = python_file.with_suffix(".py.forge-backup")
         assert not backup.exists()
+
+
+# ---------------------------------------------------------------------------
+# F003: search_file
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def searchable_file(tmp_path: Path) -> Path:
+    """Create a file with varied content for search testing."""
+    f = tmp_path / "search_target.py"
+    content = "\n".join(
+        [
+            "import os",
+            "import sys",
+            "",
+            "def hello_world():",
+            '    print("hello world")',
+            "",
+            "def goodbye_world():",
+            '    print("goodbye world")',
+            "",
+            "class MyClass:",
+            "    def method(self):",
+            "        pass",
+            "",
+            "# TODO: fix this",
+            "# TODO: refactor that",
+            "x = 42",
+        ]
+    )
+    f.write_text(content + "\n")
+    return f
+
+
+class TestSearchFileLiteral:
+    """test_search_file_literal — literal string search."""
+
+    def test_returns_search_result(self, searchable_file: Path) -> None:
+        result = search_file(str(searchable_file), "hello", literal=True)
+        assert isinstance(result, SearchResult)
+
+    def test_finds_matches(self, searchable_file: Path) -> None:
+        result = search_file(str(searchable_file), "TODO", literal=True)
+        assert result.total_matches == 2
+        assert all(m.line_number > 0 for m in result.matches)
+
+    def test_match_content(self, searchable_file: Path) -> None:
+        result = search_file(str(searchable_file), "hello_world", literal=True)
+        assert result.total_matches == 1
+        assert "def hello_world" in result.matches[0].content
+
+    def test_context_lines(self, searchable_file: Path) -> None:
+        result = search_file(
+            str(searchable_file), "hello_world", literal=True, context_lines=2
+        )
+        m = result.matches[0]
+        assert len(m.context_before) <= 2
+        assert len(m.context_after) <= 2
+
+    def test_no_matches(self, searchable_file: Path) -> None:
+        result = search_file(str(searchable_file), "nonexistent", literal=True)
+        assert result.total_matches == 0
+        assert result.truncated is False
+
+    def test_file_not_found(self) -> None:
+        with pytest.raises(FileNotFoundError):
+            search_file("/nonexistent.py", "pattern")
+
+    def test_path_in_result(self, searchable_file: Path) -> None:
+        result = search_file(str(searchable_file), "x", literal=True)
+        assert result.path == str(searchable_file.resolve())
+        assert result.pattern == "x"
+
+
+class TestSearchFileRegex:
+    """test_search_file_regex — regex pattern search."""
+
+    def test_regex_pattern(self, searchable_file: Path) -> None:
+        result = search_file(str(searchable_file), r"def \w+_world")
+        assert result.total_matches == 2
+
+    def test_regex_line_start(self, searchable_file: Path) -> None:
+        result = search_file(str(searchable_file), r"^import")
+        assert result.total_matches == 2
+
+    def test_invalid_regex_raises(self, searchable_file: Path) -> None:
+        with pytest.raises(ValueError, match="Invalid regex"):
+            search_file(str(searchable_file), "[invalid")
+
+    def test_invalid_regex_has_fix_hint(self, searchable_file: Path) -> None:
+        with pytest.raises(ValueError, match="FIX:"):
+            search_file(str(searchable_file), "[invalid")
+
+
+class TestSearchFileBounds:
+    """test_search_file_bounds — result truncation."""
+
+    def test_truncation(self, tmp_path: Path) -> None:
+        f = tmp_path / "many_matches.txt"
+        content = "\n".join(f"match line {i}" for i in range(100))
+        f.write_text(content)
+        result = search_file(str(f), "match", literal=True, max_results=10)
+        assert len(result.matches) == 10
+        assert result.total_matches == 100
+        assert result.truncated is True
+
+    def test_max_results_hard_cap_at_50(self, tmp_path: Path) -> None:
+        f = tmp_path / "many.txt"
+        content = "\n".join(f"line {i}" for i in range(100))
+        f.write_text(content)
+        result = search_file(str(f), "line", literal=True, max_results=999)
+        assert len(result.matches) == 50

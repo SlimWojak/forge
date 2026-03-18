@@ -139,8 +139,10 @@ class EditResult:
 class SearchMatch:
     """A single search match within a file."""
 
-    line: int
+    line_number: int
     content: str
+    context_before: list[str] = field(default_factory=list)
+    context_after: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -150,8 +152,10 @@ class SearchResult:
     Bounded to max_results to prevent context flooding.
     """
 
+    path: str
+    pattern: str
     matches: list[SearchMatch]
-    total: int
+    total_matches: int
     truncated: bool
 
 
@@ -529,26 +533,73 @@ def search_file(
     path: str,
     pattern: str,
     max_results: int = 50,
+    literal: bool = False,
+    context_lines: int = 2,
 ) -> SearchResult:
     """Search for a regex/literal pattern within a single file.
 
     Results are bounded to max_results to prevent context flooding.
-    Returns line numbers and matched content for each hit.
+    Returns line numbers, matched content, and surrounding context.
 
     Args:
         path: Path to the file to search.
         pattern: Regex or literal pattern to match.
-        max_results: Maximum number of results to return. Default 50.
+        max_results: Maximum number of results to return. Default 50, hard cap 50.
+        literal: If True, treat pattern as a literal string (not regex).
+        context_lines: Number of lines of context before and after each match.
 
     Returns:
-        SearchResult with matches, total count, and truncation flag.
+        SearchResult with path, pattern, matches, total_matches, truncated flag.
 
-    TODO: Implement regex search with bounded output (§11.1).
-    TODO: Support both regex and literal mode.
+    See: FORGE_ARCHITECTURE_v0.2.md §11.1
     """
-    max_results = min(max_results, 50)  # Hard cap per spec
+    import re
 
-    raise NotImplementedError("search_file not yet implemented — see §11.1")
+    max_results = min(max_results, 50)
+
+    file_path = Path(path).resolve()
+    if not file_path.is_file():
+        raise FileNotFoundError(f"File not found: {path}")
+
+    text = file_path.read_text(encoding="utf-8", errors="replace")
+    lines = text.splitlines()
+
+    if literal:
+        compiled = re.compile(re.escape(pattern))
+    else:
+        try:
+            compiled = re.compile(pattern)
+        except re.error as e:
+            raise ValueError(
+                f"Invalid regex pattern: {e}\n"
+                "FIX: Check the regex syntax or use literal=True for exact string matching."
+            ) from e
+
+    all_matches: list[SearchMatch] = []
+    for i, line in enumerate(lines):
+        if compiled.search(line):
+            ctx_before = lines[max(0, i - context_lines) : i]
+            ctx_after = lines[i + 1 : i + 1 + context_lines]
+            all_matches.append(
+                SearchMatch(
+                    line_number=i + 1,
+                    content=line,
+                    context_before=ctx_before,
+                    context_after=ctx_after,
+                )
+            )
+
+    total = len(all_matches)
+    truncated = total > max_results
+    returned = all_matches[:max_results]
+
+    return SearchResult(
+        path=str(file_path),
+        pattern=pattern,
+        matches=returned,
+        total_matches=total,
+        truncated=truncated,
+    )
 
 
 def run_command(

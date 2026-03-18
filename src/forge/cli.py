@@ -89,13 +89,14 @@ def task(description: str, difficulty: str | None) -> None:
     import os
     import uuid
     from pathlib import Path
-    from forge.config.loader import load_config
-    from forge.models.provider import ModelProvider
-    from forge.models.adapter import LocalModelAdapter
+
     from forge.aci.worker import run_worker
-    from forge.oracle.generator import OracleGenerator
+    from forge.config.loader import load_config
     from forge.gate.engine import GateEngine
-    from forge.orchestrator.task_loop import run_task_loop, WorkerOutput
+    from forge.models.adapter import LocalModelAdapter
+    from forge.models.provider import ModelProvider
+    from forge.oracle.generator import OracleGenerator
+    from forge.orchestrator.task_loop import WorkerOutput, run_task_loop
 
     project_root = Path(".")
     console.print(f"[bold green]FORGE[/] Task: {description}")
@@ -125,7 +126,10 @@ def task(description: str, difficulty: str | None) -> None:
                 full_desc = task_description + "\n\n" + todo_context
             console.print("  [cyan]Worker executing...[/]")
             result = run_worker(full_desc, model=worker_adapter, cwd=cwd)
-            console.print(f"  [cyan]Worker done:[/] {result.iterations} iter, {len(result.tool_calls)} tool calls")
+            console.print(
+                f"  [cyan]Worker done:[/] {result.iterations} iter, "
+                f"{len(result.tool_calls)} tool calls"
+            )
             if result.error:
                 console.print(f"  [red]Worker error:[/] {result.error}")
             return WorkerOutput(
@@ -179,7 +183,7 @@ def task(description: str, difficulty: str | None) -> None:
         console.print(f"  Wall clock: {result.wall_clock_ms:,}ms")
         console.print(f"  Tool calls: {result.total_tool_calls}")
         if result.proposal:
-            console.print(f"  [yellow]Shadow mode:[/] Commit proposed.")
+            console.print("  [yellow]Shadow mode:[/] Commit proposed.")
     else:
         console.print(f"\n[bold red]FAIL[/] after {result.iterations} iteration(s)")
         if result.recovery_mode:
@@ -298,7 +302,8 @@ def oracle(task_id: str | None) -> None:
     """
     import json as _json
     from pathlib import Path as _Path
-    from forge.oracle.generator import OracleGenerator as _OG
+
+    from forge.oracle.generator import OracleGenerator
 
     project_root = _Path(".")
     console.print("[bold green]FORGE[/] Oracle")
@@ -315,12 +320,12 @@ def oracle(task_id: str | None) -> None:
         return
 
     try:
-        gen = _OG(project_root=project_root)
+        gen = OracleGenerator(project_root=project_root)
         oracle_obj = gen.build_oracle(
             task_id="manual",
-            task_description="Manual oracle generation",
-            worker_model="local",
-            worker_assessment="Manual run",
+            worktree_path=project_root,
+            main_branch="HEAD~1",
+            worker_final_message="Manual oracle generation run",
         )
         console.print_json(_json.dumps(oracle_obj.to_json(), indent=2))
     except Exception as e:

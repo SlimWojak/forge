@@ -3,33 +3,46 @@
 #
 # All paths are relative to the project root unless absolute.
 # API keys are referenced as environment variable names — never plaintext.
+#
+# ─── DGX Spark Bootstrap Configuration ───
+# This config targets a single DGX Spark (GB10, 128GB unified memory)
+# running Nemotron 3 Super via Ollama, inside a NemoClaw/OpenShell sandbox.
+# Frontier APIs are called for review roles only.
 
 forge_version: "0.2"
 
 # ─── Model Configuration ───
-# Each role maps to a model endpoint. Local models use OpenAI-compatible API.
-# Frontier models use provider-specific APIs with keys from env vars.
+# Local models: Ollama on DGX Spark (OpenAI-compatible /v1 endpoint).
+# Frontier models: API calls via env var keys.
+#
+# Ollama serves OpenAI-compatible API on port 11434 by default.
+# Model names match what's pulled in Ollama (e.g. `ollama pull nemotron`).
 models:
   local:
     planner:
-      endpoint: "http://dgx-spark-1:8000/v1"
-      model: "nemotron-3-super-120b"
+      endpoint: "http://localhost:11434/v1"
+      model: "nemotron"  # Nemotron 3 Super 120B — pulled via Ollama
       role: "Mission decomposition, milestone planning, quality review"
       max_tokens: 8192
       temperature: 0.3
+      # Note: Nemotron 3 Super at FP4 fits in ~32GB of 128GB unified memory.
+      # Leaves ample room for worker inference in parallel.
 
     worker:
-      endpoint: "http://dgx-spark-2:8000/v1"
-      model: "qwen3.5-35b"
+      endpoint: "http://localhost:11434/v1"
+      model: "nemotron"  # Same model, same endpoint — Ollama handles concurrency.
       role: "Code generation, test writing, bug fixing, lint resolution"
       max_tokens: 4096
       temperature: 0.2
-      lora_path: null  # Path to LoRA adapter if fine-tuned
+      lora_path: null  # Path to LoRA adapter if fine-tuned (Phase 2+)
+      # When Qwen 3.5 becomes available via Ollama, swap to:
+      #   model: "qwen3.5:35b"
+      # Smaller model = faster iteration, lower memory, boundary data point.
 
   frontier:
     reviewer:
       provider: "anthropic"
-      model: "claude-sonnet-4.6"
+      model: "claude-sonnet-4-20260318"
       api_key_env: "ANTHROPIC_API_KEY"
       role: "Primary reviewer (Phase 1)"
 
@@ -42,7 +55,7 @@ models:
     # Phase 2+ only — chairman synthesis
     chairman:
       provider: "anthropic"
-      model: "claude-opus-4.6"
+      model: "claude-opus-4-20260318"
       api_key_env: "ANTHROPIC_API_KEY"
       role: "Chairman synthesis (Phase 2+)"
 
@@ -130,3 +143,30 @@ skills:
     tier1_to_tier2_applications: 5   # Applied successfully M times → Tier 2
     tier2_to_tier3_applications: 10  # Stable for P applications → Tier 3
     tier3_requires_human_approval: true  # Phase 1 safety: human approves Tier 3
+
+# ─── Environment Setup Notes ───
+# This section is documentation only, not parsed by FORGE.
+#
+# Required environment variables:
+#   ANTHROPIC_API_KEY  — for Sonnet/Opus reviewer + chairman
+#   OPENAI_API_KEY     — for GPT-5.3-Codex escalation reviewer
+#   XAI_API_KEY        — for Grok intelligence role (optional)
+#
+# Ollama setup on DGX Spark:
+#   1. Install Ollama: curl -fsSL https://ollama.com/install.sh | sh
+#   2. Pull Nemotron: ollama pull nemotron
+#      (Downloads ~87GB — Nemotron 3 Super 120B)
+#   3. Verify: curl http://localhost:11434/v1/models
+#   4. Ollama auto-starts on boot via systemd
+#
+# NemoClaw sandbox (if using OpenShell):
+#   The Ollama endpoint inside the sandbox routes via OpenShell's
+#   inference policy layer. From inside the sandbox, use:
+#     endpoint: "http://host.docker.internal:11434/v1"
+#   or whatever the gateway maps to. The nemoclaw onboard wizard
+#   auto-detects Ollama and configures the route.
+#
+# To verify local model is responding:
+#   curl http://localhost:11434/v1/chat/completions \
+#     -H "Content-Type: application/json" \
+#     -d '{"model":"nemotron","messages":[{"role":"user","content":"Hello"}]}'

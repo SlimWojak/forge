@@ -19,7 +19,6 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-
 # ---------------------------------------------------------------------------
 # Base classes
 # ---------------------------------------------------------------------------
@@ -114,6 +113,7 @@ class ViewResult:
     end_line: int
     content: str
     total_lines: int
+    truncated: bool = False
 
 
 @dataclass(frozen=True)
@@ -256,13 +256,35 @@ class QueryTracesResult:
 
 
 # ---------------------------------------------------------------------------
+# Session-scoped position tracker for view_file
+# ---------------------------------------------------------------------------
+
+_view_positions: dict[str, int] = {}
+
+
+def _reset_view_positions() -> None:
+    """Reset the position tracker (used in tests)."""
+    _view_positions.clear()
+
+
+def _is_binary(path: Path, sample_size: int = 8192) -> bool:
+    """Heuristic: file is binary if the first sample_size bytes contain null."""
+    try:
+        with open(path, "rb") as f:
+            chunk = f.read(sample_size)
+        return b"\x00" in chunk
+    except OSError:
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Phase 1 Core Tools (5 primary + extended)
 # ---------------------------------------------------------------------------
 
 
 def view_file(
     path: str,
-    start_line: int = 1,
+    start_line: int | None = None,
     num_lines: int = 100,
 ) -> ViewResult:
     """View a file with line numbers, starting at the given line.
@@ -273,29 +295,65 @@ def view_file(
 
     Args:
         path: Absolute or project-relative path to the file.
-        start_line: First line to display (1-indexed). Must be >= 1.
+        start_line: First line to display (1-indexed). None = continue
+                    from last position (or 1 if not viewed before).
         num_lines: Number of lines to show. Max 200, default 100.
 
     Returns:
-        ViewResult with path, line range, content, and total line count.
+        ViewResult with path, line range, content, total line count,
+        and truncated flag.
 
-    Raises:
-        FileNotFoundError: If the file does not exist.
-        ValueError: If start_line < 1 or num_lines < 1.
-
-    TODO: Implement file reading with bounds checking (§11.1).
-    TODO: Add stateful position tracking per session.
-    TODO: Wire Layer 1 hooks for pre-read checks.
+    See: FORGE_ARCHITECTURE_v0.2.md §11.1
     """
-    # Bounds validation
-    if start_line < 1:
-        raise ValueError(f"start_line must be >= 1, got {start_line}")
     if num_lines < 1:
         raise ValueError(f"num_lines must be >= 1, got {num_lines}")
-    num_lines = min(num_lines, 200)  # Hard cap
+    num_lines = min(num_lines, 200)
 
-    # TODO: Implement actual file reading
-    raise NotImplementedError("view_file not yet implemented — see §11.1")
+    file_path = Path(path).resolve()
+    if not file_path.is_file():
+        raise FileNotFoundError(f"File not found: {path}")
+
+    if _is_binary(file_path):
+        raise ValueError(
+            f"Cannot view binary file: {path}\n"
+            "WHY: Binary files are not human-readable and would waste context tokens.\n"
+            "FIX: Use a hex viewer or check if you meant a different file."
+        )
+
+    resolved_key = str(file_path)
+
+    if start_line is None:
+        start_line = _view_positions.get(resolved_key, 1)
+    if start_line < 1:
+        raise ValueError(f"start_line must be >= 1, got {start_line}")
+
+    lines = file_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    total_lines = len(lines)
+
+    # Clamp start_line to file length (return empty content at EOF rather than error)
+    if start_line > total_lines:
+        start_line = max(total_lines, 1)
+
+    end_line = min(start_line + num_lines - 1, total_lines)
+    selected = lines[start_line - 1 : end_line]
+
+    numbered = "\n".join(
+        f"{start_line + i:>6} | {line}" for i, line in enumerate(selected)
+    )
+
+    truncated = end_line < total_lines
+
+    # Update position memory: next call continues after this window
+    _view_positions[resolved_key] = end_line + 1
+
+    return ViewResult(
+        path=str(file_path),
+        start_line=start_line,
+        end_line=end_line,
+        content=numbered,
+        total_lines=total_lines,
+        truncated=truncated,
+    )
 
 
 def edit_file(

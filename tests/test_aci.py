@@ -11,8 +11,11 @@ from pathlib import Path
 import pytest
 
 from forge.aci.tools import (
+    EditResult,
     ViewResult,
     _reset_view_positions,
+    edit_file,
+    rollback_edit,
     view_file,
 )
 
@@ -181,3 +184,148 @@ class TestViewFileBinary:
     def test_binary_error_is_actionable(self, binary_file: Path) -> None:
         with pytest.raises(ValueError, match="FIX:"):
             view_file(str(binary_file))
+
+
+# ---------------------------------------------------------------------------
+# F002: edit_file
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def python_file(tmp_path: Path) -> Path:
+    """Create a valid Python file with 10 lines."""
+    f = tmp_path / "module.py"
+    content = "\n".join(
+        [
+            "import os",
+            "",
+            "def hello():",
+            '    return "hello"',
+            "",
+            "def goodbye():",
+            '    return "goodbye"',
+            "",
+            "x = 1",
+            "y = 2",
+        ]
+    )
+    f.write_text(content + "\n")
+    return f
+
+
+@pytest.fixture()
+def ts_file(tmp_path: Path) -> Path:
+    """Create a simple TypeScript/JS file."""
+    f = tmp_path / "app.ts"
+    content = "const x: number = 1;\nconsole.log(x);\n"
+    f.write_text(content)
+    return f
+
+
+class TestEditFileBasic:
+    """test_edit_file_basic — basic editing and structured output."""
+
+    def test_returns_edit_result(self, python_file: Path) -> None:
+        result = edit_file(str(python_file), 9, 9, "x = 42")
+        assert isinstance(result, EditResult)
+
+    def test_applied_fields(self, python_file: Path) -> None:
+        result = edit_file(str(python_file), 9, 9, "x = 42")
+        assert result.status == "applied"
+        assert result.applied is True
+        assert result.start_line == 9
+        assert result.end_line == 9
+        assert result.lines_removed == 1
+        assert result.lines_added == 1
+        assert result.lint_status == "pass"
+
+    def test_content_actually_changed(self, python_file: Path) -> None:
+        edit_file(str(python_file), 9, 9, "x = 42")
+        content = python_file.read_text()
+        assert "x = 42" in content
+        assert "x = 1" not in content
+
+    def test_multi_line_replacement(self, python_file: Path) -> None:
+        result = edit_file(str(python_file), 3, 4, "def greet():\n    return 'hi'")
+        assert result.lines_removed == 2
+        assert result.lines_added == 2
+        content = python_file.read_text()
+        assert "def greet():" in content
+        assert "def hello():" not in content
+
+    def test_file_not_found(self) -> None:
+        with pytest.raises(FileNotFoundError):
+            edit_file("/nonexistent/file.py", 1, 1, "x = 1")
+
+    def test_start_line_below_one_raises(self, python_file: Path) -> None:
+        with pytest.raises(ValueError, match="start_line must be >= 1"):
+            edit_file(str(python_file), 0, 1, "x")
+
+    def test_end_line_before_start_raises(self, python_file: Path) -> None:
+        with pytest.raises(ValueError, match="end_line"):
+            edit_file(str(python_file), 5, 3, "x")
+
+    def test_start_beyond_eof_raises(self, python_file: Path) -> None:
+        with pytest.raises(ValueError, match="exceeds file length"):
+            edit_file(str(python_file), 999, 999, "x")
+
+    def test_edit_non_python_file_skips_lint(self, tmp_path: Path) -> None:
+        f = tmp_path / "data.txt"
+        f.write_text("line1\nline2\nline3\n")
+        result = edit_file(str(f), 2, 2, "changed")
+        assert result.lint_status == "skipped"
+        assert result.applied is True
+
+
+class TestEditFileLintReject:
+    """test_edit_file_lint_reject — lint check prevents bad edits."""
+
+    def test_syntax_error_rejected(self, python_file: Path) -> None:
+        result = edit_file(str(python_file), 3, 4, "def broken(:\n    pass")
+        assert result.status == "rejected"
+        assert result.applied is False
+        assert result.lint_status == "fail"
+        assert result.reason is not None
+        assert "Syntax error" in result.reason
+
+    def test_rejected_edit_not_written(self, python_file: Path) -> None:
+        original = python_file.read_text()
+        edit_file(str(python_file), 3, 4, "def broken(:\n    pass")
+        assert python_file.read_text() == original
+
+    def test_error_message_is_actionable(self, python_file: Path) -> None:
+        result = edit_file(str(python_file), 3, 4, "def broken(:\n    pass")
+        assert "WHY:" in result.reason
+        assert "FIX:" in result.reason
+
+    def test_valid_edit_passes_lint(self, python_file: Path) -> None:
+        result = edit_file(str(python_file), 3, 4, "def new_func():\n    return 1")
+        assert result.lint_status == "pass"
+        assert result.applied is True
+
+
+class TestEditFileRollback:
+    """test_edit_file_rollback — backup creation and restore."""
+
+    def test_backup_created_on_apply(self, python_file: Path) -> None:
+        edit_file(str(python_file), 9, 9, "x = 99")
+        backup = python_file.with_suffix(".py.forge-backup")
+        assert backup.exists()
+        assert "x = 1" in backup.read_text()
+
+    def test_rollback_restores_original(self, python_file: Path) -> None:
+        original = python_file.read_text()
+        edit_file(str(python_file), 9, 9, "x = 99")
+        assert "x = 99" in python_file.read_text()
+
+        restored = rollback_edit(str(python_file))
+        assert restored is True
+        assert python_file.read_text() == original
+
+    def test_rollback_returns_false_if_no_backup(self, python_file: Path) -> None:
+        assert rollback_edit(str(python_file)) is False
+
+    def test_no_backup_on_rejected_edit(self, python_file: Path) -> None:
+        edit_file(str(python_file), 3, 4, "def broken(:\n    pass")
+        backup = python_file.with_suffix(".py.forge-backup")
+        assert not backup.exists()

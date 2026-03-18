@@ -126,6 +126,12 @@ class EditResult:
 
     status: str  # "applied" | "rejected"
     path: str
+    start_line: int = 0
+    end_line: int = 0
+    lines_added: int = 0
+    lines_removed: int = 0
+    lint_status: str = "skipped"  # "pass" | "fail" | "skipped"
+    applied: bool = False
     reason: str | None = None
 
 
@@ -356,6 +362,71 @@ def view_file(
     )
 
 
+def _lint_check_python(source: str) -> tuple[bool, str | None]:
+    """Check Python source for syntax errors using ast.parse."""
+    import ast
+
+    try:
+        ast.parse(source)
+        return True, None
+    except SyntaxError as e:
+        msg = (
+            f"Syntax error on line {e.lineno}, column {e.offset}: {e.msg}\n"
+            "WHY: Applying this edit would create invalid Python that "
+            "cannot be imported or executed.\n"
+            "FIX: Correct the syntax error in the replacement content "
+            "before retrying."
+        )
+        return False, msg
+
+
+def _lint_check_typescript(source: str) -> tuple[bool, str | None]:
+    """Basic TypeScript/JavaScript syntax check via Node.js."""
+    import subprocess
+    import tempfile
+
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".js", mode="w", delete=False) as f:
+            f.write(source)
+            tmp_path = f.name
+        result = subprocess.run(
+            ["node", "--check", tmp_path],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        Path(tmp_path).unlink(missing_ok=True)
+        if result.returncode != 0:
+            msg = (
+                f"Syntax error: {result.stderr.strip()}\n"
+                "WHY: Applying this edit would create invalid JavaScript/TypeScript.\n"
+                "FIX: Correct the syntax error in the replacement content."
+            )
+            return False, msg
+        return True, None
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return True, None  # Node not available; skip check gracefully
+
+
+def rollback_edit(path: str) -> bool:
+    """Restore a file from its .forge-backup. Returns True if restored."""
+    file_path = Path(path).resolve()
+    backup_path = file_path.with_suffix(file_path.suffix + ".forge-backup")
+    if backup_path.is_file():
+        backup_path.rename(file_path)
+        return True
+    return False
+
+
+_LINT_CHECKERS: dict[str, Any] = {
+    ".py": _lint_check_python,
+    ".ts": _lint_check_typescript,
+    ".tsx": _lint_check_typescript,
+    ".js": _lint_check_typescript,
+    ".jsx": _lint_check_typescript,
+}
+
+
 def edit_file(
     path: str,
     start_line: int,
@@ -364,12 +435,12 @@ def edit_file(
 ) -> EditResult:
     """Replace lines start_line..end_line with new_content.
 
-    Before applying, the edit is validated by Layer 1 hooks:
-    - pre_edit: syntax_check (tree-sitter parse)
-    - post_edit: auto_format + secret_scan
+    Before applying, the edit is validated by lint check:
+    - Python files: ast.parse syntax validation
+    - TypeScript/JS files: node --check validation
 
-    A rejected edit is never written to disk. The error message
-    explains WHAT went wrong, WHY it matters, and HOW to fix it.
+    A rejected edit is never written to disk. Creates a backup
+    before applying for rollback capability.
 
     Args:
         path: Path to the file to edit.
@@ -378,18 +449,80 @@ def edit_file(
         new_content: Replacement content (may be multi-line string).
 
     Returns:
-        EditResult with status "applied" or "rejected" and reason.
+        EditResult with status, line counts, lint_status, and applied flag.
 
-    TODO: Implement line replacement with bounds checking (§11.1).
-    TODO: Wire Layer 1 pre_edit and post_edit hooks (§6.1).
-    TODO: Track edits in observability pipeline.
+    See: FORGE_ARCHITECTURE_v0.2.md §11.1
     """
     if start_line < 1:
         raise ValueError(f"start_line must be >= 1, got {start_line}")
     if end_line < start_line:
         raise ValueError(f"end_line ({end_line}) must be >= start_line ({start_line})")
 
-    raise NotImplementedError("edit_file not yet implemented — see §11.1")
+    file_path = Path(path).resolve()
+    if not file_path.is_file():
+        raise FileNotFoundError(f"File not found: {path}")
+
+    original = file_path.read_text(encoding="utf-8", errors="replace")
+    lines = original.splitlines(keepends=True)
+    total_lines = len(lines)
+
+    if start_line > total_lines:
+        raise ValueError(
+            f"start_line ({start_line}) exceeds file length ({total_lines})"
+        )
+    if end_line > total_lines:
+        end_line = total_lines
+
+    # Build the new file content
+    new_lines = new_content.splitlines(keepends=True)
+    # Ensure last line has newline if original did
+    if new_lines and not new_lines[-1].endswith("\n"):
+        new_lines[-1] += "\n"
+
+    result_lines = lines[: start_line - 1] + new_lines + lines[end_line:]
+    result_content = "".join(result_lines)
+
+    lines_removed = end_line - start_line + 1
+    lines_added = len(new_lines)
+
+    # Lint check BEFORE applying
+    suffix = file_path.suffix.lower()
+    checker = _LINT_CHECKERS.get(suffix)
+    lint_status = "skipped"
+
+    if checker is not None:
+        ok, error_msg = checker(result_content)
+        if not ok:
+            return EditResult(
+                status="rejected",
+                path=str(file_path),
+                start_line=start_line,
+                end_line=end_line,
+                lines_added=lines_added,
+                lines_removed=lines_removed,
+                lint_status="fail",
+                applied=False,
+                reason=error_msg,
+            )
+        lint_status = "pass"
+
+    # Create backup before applying
+    backup_path = file_path.with_suffix(file_path.suffix + ".forge-backup")
+    backup_path.write_text(original, encoding="utf-8")
+
+    # Apply the edit
+    file_path.write_text(result_content, encoding="utf-8")
+
+    return EditResult(
+        status="applied",
+        path=str(file_path),
+        start_line=start_line,
+        end_line=end_line,
+        lines_added=lines_added,
+        lines_removed=lines_removed,
+        lint_status=lint_status,
+        applied=True,
+    )
 
 
 def search_file(

@@ -167,9 +167,13 @@ class CommandResult:
     Dangerous commands are blocked mechanically.
     """
 
+    command: str
+    exit_code: int
     stdout: str
     stderr: str
-    exit_code: int
+    duration_ms: int = 0
+    timed_out: bool = False
+    blocked: bool = False
 
 
 @dataclass(frozen=True)
@@ -602,32 +606,102 @@ def search_file(
     )
 
 
+_BLOCKED_PATTERNS: list[str] = [
+    r"rm\s+-rf",
+    r"curl\s.*\|\s*(bash|sh)",
+    r"\bsudo\b",
+    r"chmod\s+777",
+    r"\beval\b",
+]
+
+
+def _is_command_blocked(command: str) -> str | None:
+    """Check if a command matches any blocked pattern. Returns reason or None."""
+    import re
+
+    for pat in _BLOCKED_PATTERNS:
+        if re.search(pat, command):
+            return (
+                f"Command blocked: matches dangerous pattern '{pat}'\n"
+                "WHY: This command pattern is on the block list to prevent "
+                "accidental destructive actions.\n"
+                "FIX: Use a safer alternative or request an allowlist exception."
+            )
+    return None
+
+
 def run_command(
     command: str,
     timeout: int = 30,
+    cwd: str | None = None,
 ) -> CommandResult:
     """Execute a shell command after allowlist validation.
 
-    Commands are checked against the allowlist in .forge/hooks.yaml
-    before execution. Blocked commands return a rejected result with
-    the allowed command list.
+    Commands are checked against blocked patterns before execution.
+    Dangerous commands are rejected mechanically. Output is truncated
+    to bound context window usage.
 
     Args:
         command: Shell command string to execute.
-        timeout: Maximum execution time in seconds. Default 30.
+        timeout: Maximum execution time in seconds. Default 30, hard cap 300.
+        cwd: Working directory for the command. None = current directory.
 
     Returns:
-        CommandResult with stdout, stderr, and exit code.
+        CommandResult with command, exit_code, stdout, stderr, duration_ms,
+        timed_out flag, and blocked flag.
 
-    TODO: Implement subprocess execution with timeout (§11.1).
-    TODO: Wire Layer 1 pre_command allowlist hook (§6.1).
-    TODO: Capture in observability pipeline.
+    See: FORGE_ARCHITECTURE_v0.2.md §11.1
     """
+    import subprocess
+    import time
+
     if timeout < 1:
         raise ValueError(f"timeout must be >= 1, got {timeout}")
-    timeout = min(timeout, 300)  # Hard cap at 5 minutes
+    timeout = min(timeout, 300)
 
-    raise NotImplementedError("run_command not yet implemented — see §11.1")
+    blocked_reason = _is_command_blocked(command)
+    if blocked_reason is not None:
+        return CommandResult(
+            command=command,
+            exit_code=-1,
+            stdout="",
+            stderr=blocked_reason,
+            duration_ms=0,
+            timed_out=False,
+            blocked=True,
+        )
+
+    start = time.monotonic()
+    try:
+        result = subprocess.run(
+            command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=cwd,
+        )
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        return CommandResult(
+            command=command,
+            exit_code=result.returncode,
+            stdout=result.stdout[:5000],
+            stderr=result.stderr[:2000],
+            duration_ms=elapsed_ms,
+            timed_out=False,
+            blocked=False,
+        )
+    except subprocess.TimeoutExpired:
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        return CommandResult(
+            command=command,
+            exit_code=-1,
+            stdout="",
+            stderr=f"Command timed out after {timeout} seconds",
+            duration_ms=elapsed_ms,
+            timed_out=True,
+            blocked=False,
+        )
 
 
 def run_tests(

@@ -915,23 +915,259 @@ def tree(directory: str = ".", max_depth: int = 3) -> TreeResult:
     raise NotImplementedError("tree not yet implemented — see §11.1")
 
 
+_LANGUAGE_MAP: dict[str, str] = {
+    ".py": "python",
+    ".ts": "typescript",
+    ".tsx": "tsx",
+    ".js": "javascript",
+    ".jsx": "javascript",
+    ".rs": "rust",
+    ".go": "go",
+    ".rb": "ruby",
+    ".java": "java",
+    ".c": "c",
+    ".cpp": "cpp",
+    ".h": "c",
+}
+
+_PYTHON_SYMBOL_QUERIES = """
+(function_definition
+  name: (identifier) @name) @func
+
+(class_definition
+  name: (identifier) @name) @cls
+
+(import_statement) @import
+
+(import_from_statement) @import
+
+(assignment
+  left: (identifier) @name
+  type: (type) @type) @typed_assign
+"""
+
+_TS_SYMBOL_QUERIES = """
+(function_declaration
+  name: (identifier) @name) @func
+
+(class_declaration
+  name: (type_identifier) @name) @cls
+
+(import_statement) @import
+
+(export_statement) @export
+
+(lexical_declaration) @decl
+"""
+
+
+def _extract_signature(node: Any, source_bytes: bytes) -> str:
+    """Extract a clean signature from a tree-sitter node (no body)."""
+    text = node.text.decode("utf-8", errors="replace")
+    lines = text.split("\n")
+    # For functions/classes, take only the signature line(s) up to the colon/brace
+    if node.type in (
+        "function_definition", "class_definition",
+        "function_declaration", "class_declaration",
+        "method_definition",
+    ):
+        sig_lines = []
+        for line in lines:
+            sig_lines.append(line)
+            stripped = line.rstrip()
+            if stripped.endswith(":") or stripped.endswith("{"):
+                break
+        return "\n".join(sig_lines)
+    # For imports and other single-line constructs
+    return lines[0] if lines else text
+
+
+def _get_symbol_kind(node_type: str) -> str:
+    """Map tree-sitter node type to a symbol kind."""
+    mapping = {
+        "function_definition": "function",
+        "function_declaration": "function",
+        "method_definition": "method",
+        "class_definition": "class",
+        "class_declaration": "class",
+        "import_statement": "import",
+        "import_from_statement": "import",
+        "export_statement": "export",
+        "lexical_declaration": "variable",
+        "assignment": "variable",
+        "typed_assign": "variable",
+    }
+    return mapping.get(node_type, "other")
+
+
+def _extract_python_symbols(
+    root: Any, source_bytes: bytes
+) -> list[dict[str, Any]]:
+    """Walk the Python AST and extract symbols."""
+    symbols: list[dict[str, Any]] = []
+
+    def _walk(node: Any, depth: int = 0) -> None:
+        if node.type == "function_definition":
+            symbols.append({
+                "name": _get_child_text(node, "name", source_bytes),
+                "kind": "function" if depth == 0 else "method",
+                "signature": _extract_signature(node, source_bytes),
+                "start_line": node.start_point[0] + 1,
+                "end_line": node.end_point[0] + 1,
+            })
+        elif node.type == "class_definition":
+            symbols.append({
+                "name": _get_child_text(node, "name", source_bytes),
+                "kind": "class",
+                "signature": _extract_signature(node, source_bytes),
+                "start_line": node.start_point[0] + 1,
+                "end_line": node.end_point[0] + 1,
+            })
+            # Recurse into class body for methods
+            for child in node.children:
+                if child.type == "block":
+                    for sub in child.children:
+                        _walk(sub, depth + 1)
+            return
+        elif node.type in ("import_statement", "import_from_statement"):
+            symbols.append({
+                "name": node.text.decode("utf-8", errors="replace").strip(),
+                "kind": "import",
+                "signature": node.text.decode("utf-8", errors="replace").strip(),
+                "start_line": node.start_point[0] + 1,
+                "end_line": node.end_point[0] + 1,
+            })
+
+        if depth == 0:
+            for child in node.children:
+                _walk(child, depth)
+
+    _walk(root)
+    return symbols
+
+
+def _get_child_text(
+    node: Any, field_name: str, source: bytes
+) -> str:
+    """Get the text of a named child field."""
+    for child in node.children:
+        if child.type == "identifier" or child.type == "type_identifier":
+            return child.text.decode("utf-8", errors="replace")
+    return "<unknown>"
+
+
+def _extract_ts_symbols(
+    root: Any, source_bytes: bytes
+) -> list[dict[str, Any]]:
+    """Walk the TypeScript/JS AST and extract symbols."""
+    symbols: list[dict[str, Any]] = []
+
+    for child in root.children:
+        if child.type in ("function_declaration", "class_declaration"):
+            symbols.append({
+                "name": _get_child_text(child, "name", source_bytes),
+                "kind": _get_symbol_kind(child.type),
+                "signature": _extract_signature(child, source_bytes),
+                "start_line": child.start_point[0] + 1,
+                "end_line": child.end_point[0] + 1,
+            })
+        elif child.type == "import_statement":
+            symbols.append({
+                "name": child.text.decode("utf-8", errors="replace").strip(),
+                "kind": "import",
+                "signature": child.text.decode(
+                    "utf-8", errors="replace"
+                ).strip(),
+                "start_line": child.start_point[0] + 1,
+                "end_line": child.end_point[0] + 1,
+            })
+        elif child.type == "export_statement":
+            symbols.append({
+                "name": child.text.decode("utf-8", errors="replace")
+                .split("\n")[0]
+                .strip(),
+                "kind": "export",
+                "signature": child.text.decode(
+                    "utf-8", errors="replace"
+                ).split("\n")[0].strip(),
+                "start_line": child.start_point[0] + 1,
+                "end_line": child.end_point[0] + 1,
+            })
+
+    return symbols
+
+
 def codemap(paths: list[str] | None = None) -> CodemapResult:
     """Generate tree-sitter structural summary of files.
 
     Extracts function signatures, class definitions, imports, and
-    exports using tree-sitter parsing. Returns signatures only —
-    no implementation bodies.
+    exports using tree-sitter parsing. Returns signatures only --
+    no implementation bodies. 10x token savings vs full file content.
 
     Args:
-        paths: Specific files to map. None = all changed files.
+        paths: Specific files to map. None = empty (caller must provide paths).
 
     Returns:
         CodemapResult with per-file signature lists.
 
-    TODO: Implement tree-sitter codemap pipeline (§4, §11.1).
-    TODO: Support multiple languages via tree-sitter-languages.
+    See: FORGE_ARCHITECTURE_v0.2.md §4, §11.1
     """
-    raise NotImplementedError("codemap not yet implemented — see §11.1")
+    try:
+        from tree_sitter_languages import get_parser
+    except ImportError:
+        raise ImportError(
+            "tree-sitter-languages is required for codemap.\n"
+            "FIX: pip install 'tree-sitter>=0.21,<0.22' 'tree-sitter-languages>=1.10'"
+        )
+
+    if paths is None:
+        paths = []
+
+    files_result: list[dict[str, Any]] = []
+
+    for file_path_str in paths:
+        file_path = Path(file_path_str).resolve()
+        if not file_path.is_file():
+            continue
+
+        suffix = file_path.suffix.lower()
+        lang = _LANGUAGE_MAP.get(suffix)
+        if lang is None:
+            files_result.append({
+                "path": str(file_path),
+                "language": "unknown",
+                "symbols": [],
+            })
+            continue
+
+        try:
+            parser = get_parser(lang)
+        except Exception:
+            files_result.append({
+                "path": str(file_path),
+                "language": lang,
+                "symbols": [],
+            })
+            continue
+
+        source = file_path.read_bytes()
+        tree = parser.parse(source)
+        root = tree.root_node
+
+        if lang == "python":
+            symbols = _extract_python_symbols(root, source)
+        elif lang in ("typescript", "tsx", "javascript"):
+            symbols = _extract_ts_symbols(root, source)
+        else:
+            symbols = []
+
+        files_result.append({
+            "path": str(file_path),
+            "language": lang,
+            "symbols": symbols,
+        })
+
+    return CodemapResult(files=files_result)
 
 
 def git_status() -> GitStatusResult:

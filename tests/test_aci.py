@@ -11,12 +11,14 @@ from pathlib import Path
 import pytest
 
 from forge.aci.tools import (
+    CodemapResult,
     CommandResult,
     EditResult,
     SearchResult,
     TestResult,
     ViewResult,
     _reset_view_positions,
+    codemap,
     edit_file,
     rollback_edit,
     run_command,
@@ -622,3 +624,141 @@ class TestRunTestsTimeout:
         result = run_tests(str(test_dir), timeout=2, cwd=str(tmp_path))
         assert result.timed_out is True
         assert result.status == "error"
+
+
+# ---------------------------------------------------------------------------
+# F006: codemap (tree-sitter)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def codemap_python_file(tmp_path: Path) -> Path:
+    """Create a Python file with various symbol types."""
+    f = tmp_path / "module.py"
+    f.write_text(
+        'import os\n'
+        'from pathlib import Path\n'
+        '\n'
+        'def standalone_func(x: int, y: str) -> bool:\n'
+        '    return True\n'
+        '\n'
+        'class MyClass:\n'
+        '    def method_one(self) -> None:\n'
+        '        pass\n'
+        '\n'
+        '    def method_two(self, arg: int) -> int:\n'
+        '        return arg + 1\n'
+    )
+    return f
+
+
+@pytest.fixture()
+def codemap_ts_file(tmp_path: Path) -> Path:
+    """Create a TypeScript file with various symbols."""
+    f = tmp_path / "app.ts"
+    f.write_text(
+        'import { Router } from "express";\n'
+        '\n'
+        'function handleRequest(req: Request): Response {\n'
+        '    return new Response();\n'
+        '}\n'
+        '\n'
+        'class Controller {\n'
+        '    handle() {}\n'
+        '}\n'
+    )
+    return f
+
+
+class TestCodemapPython:
+    """test_codemap_python — Python structural extraction."""
+
+    def test_returns_codemap_result(self, codemap_python_file: Path) -> None:
+        result = codemap([str(codemap_python_file)])
+        assert isinstance(result, CodemapResult)
+
+    def test_extracts_function(self, codemap_python_file: Path) -> None:
+        result = codemap([str(codemap_python_file)])
+        assert len(result.files) == 1
+        symbols = result.files[0]["symbols"]
+        funcs = [s for s in symbols if s["kind"] == "function"]
+        assert len(funcs) == 1
+        assert funcs[0]["name"] == "standalone_func"
+        assert "def standalone_func" in funcs[0]["signature"]
+
+    def test_extracts_class_and_methods(self, codemap_python_file: Path) -> None:
+        result = codemap([str(codemap_python_file)])
+        symbols = result.files[0]["symbols"]
+        classes = [s for s in symbols if s["kind"] == "class"]
+        methods = [s for s in symbols if s["kind"] == "method"]
+        assert len(classes) == 1
+        assert classes[0]["name"] == "MyClass"
+        assert len(methods) == 2
+
+    def test_extracts_imports(self, codemap_python_file: Path) -> None:
+        result = codemap([str(codemap_python_file)])
+        symbols = result.files[0]["symbols"]
+        imports = [s for s in symbols if s["kind"] == "import"]
+        assert len(imports) == 2
+
+    def test_no_function_bodies(self, codemap_python_file: Path) -> None:
+        result = codemap([str(codemap_python_file)])
+        symbols = result.files[0]["symbols"]
+        funcs = [s for s in symbols if s["kind"] == "function"]
+        assert "return True" not in funcs[0]["signature"]
+
+    def test_has_line_numbers(self, codemap_python_file: Path) -> None:
+        result = codemap([str(codemap_python_file)])
+        symbols = result.files[0]["symbols"]
+        for s in symbols:
+            assert "start_line" in s
+            assert "end_line" in s
+            assert s["start_line"] >= 1
+
+
+class TestCodemapTypescript:
+    """test_codemap_typescript — TypeScript structural extraction."""
+
+    def test_extracts_ts_function(self, codemap_ts_file: Path) -> None:
+        result = codemap([str(codemap_ts_file)])
+        symbols = result.files[0]["symbols"]
+        funcs = [s for s in symbols if s["kind"] == "function"]
+        assert len(funcs) >= 1
+        assert funcs[0]["name"] == "handleRequest"
+
+    def test_extracts_ts_class(self, codemap_ts_file: Path) -> None:
+        result = codemap([str(codemap_ts_file)])
+        symbols = result.files[0]["symbols"]
+        classes = [s for s in symbols if s["kind"] == "class"]
+        assert len(classes) == 1
+        assert classes[0]["name"] == "Controller"
+
+    def test_extracts_ts_imports(self, codemap_ts_file: Path) -> None:
+        result = codemap([str(codemap_ts_file)])
+        symbols = result.files[0]["symbols"]
+        imports = [s for s in symbols if s["kind"] == "import"]
+        assert len(imports) >= 1
+
+
+class TestCodemapUnsupported:
+    """test_codemap_unsupported_language — graceful handling."""
+
+    def test_unsupported_extension(self, tmp_path: Path) -> None:
+        f = tmp_path / "data.xyz"
+        f.write_text("some content")
+        result = codemap([str(f)])
+        assert len(result.files) == 1
+        assert result.files[0]["language"] == "unknown"
+        assert result.files[0]["symbols"] == []
+
+    def test_empty_paths(self) -> None:
+        result = codemap([])
+        assert result.files == []
+
+    def test_none_paths(self) -> None:
+        result = codemap(None)
+        assert result.files == []
+
+    def test_nonexistent_file_skipped(self) -> None:
+        result = codemap(["/nonexistent/file.py"])
+        assert result.files == []
